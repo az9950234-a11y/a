@@ -1,0 +1,85 @@
+{
+  "trailingSlash": true,
+  "redirects": [
+    {
+      "source": "/product-category/machines/fiber-laser-machines/:path*",
+      "destination": "/fiber-laser-machines/",
+      "permanent": true
+    },
+    {
+      "source": "/product-category/machines/laser-marker-machines/:path*",
+      "destination": "/laser-marking-machine/",
+      "permanent": true
+    },
+    {
+      "source": "/product-category/bending-machines/:path*",
+      "destination": "/banding-machine/",
+      "permanent": true
+    },
+    {
+      "source": "/product-category/plasma/:path*",
+      "destination": "/plasma-cutting-machines/",
+      "permanent": true
+    },
+    {
+      "source": "/product-category/:path*",
+      "destination": "/",
+      "permanent": true
+    },
+    {
+      "source": "/shop/:path*",
+      "destination": "/",
+      "permanent": true
+    },
+    {
+      "source": "/product/lf60ms-three-chuck-zero-remains-laser-cutting-machine:path*",
+      "destination": "/product/lf60ms-three-chuck-zero-remains/",
+      "permanent": true
+    },
+    {
+      "source": "/product/lf20-fiber-marking-machine-2/",
+      "destination": "/product/lf20-30-50-fiber-marking-machine/",
+      "permanent": true
+    },
+    {
+      "source": "/product/lf1390-precision-fiber-laser-cutting-machine-2/",
+      "destination": "/fiber-laser-machines/",
+      "permanent": true
+    },
+    {
+      "source": "/product/dual-use-fiber-laser-cutting-machine/",
+      "destination": "/product/lf1325lc-fiber-co2-dual-use-laser-cutting/",
+      "permanent": true
+    },
+    {
+      "source": "/product/lf3015lnrlearn-more-cnc-pipe-plate-dual-use-fiber-laser-cutting-machine:path*",
+      "destination": "/fiber-laser-machines/",
+      "permanent": true
+    },
+    {
+      "source": "/cnc-machining-services-saudi-arabia-3/",
+      "destination": "/cnc-machine-shop-saudi/",
+      "permanent": true
+    },
+    {
+      "source": "/laser-welding-machine/",
+      "destination": "/laser-welding-machines/",
+      "permanent": true
+    },
+    {
+      "source": "/plasma/",
+      "destination": "/plasma-cutting-machines/",
+      "permanent": true
+    },
+    {
+      "source": "/wp-admin/:path*",
+      "destination": "/",
+      "permanent": true
+    },
+    {
+      "source": "/wp-login.php",
+      "destination": "/",
+      "permanent": true
+    }
+  ]
+}
