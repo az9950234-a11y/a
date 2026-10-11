@@ -48,6 +48,14 @@ python3 build.py                          # يولّد الموقع في public/
 python3 -m http.server -d public 8000     # معاينة على http://localhost:8000
 ```
 
+**معاينة بدون سيرفر** (تفتح بدبل كليك على `preview/index.html`):
+
+```bash
+python3 build.py && python3 preview.py
+```
+
+مجلد `preview/` للمعاينة فقط — لا تنشره (روابطه بصيغة ملفات). النشر يكون من `public/`.
+
 يحتاج Python 3.8 أو أحدث فقط. مكتبة Pillow اختيارية (لإعادة توليد صور المشاركة): `pip install pillow`.
 
 ### إضافة منتج جديد
