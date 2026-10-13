@@ -2,30 +2,22 @@
 <html lang="ar" dir="rtl">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="robots" content="noindex, nofollow">
-  <meta name="theme-color" content="#173653">
-  <meta name="apple-mobile-web-app-capable" content="yes">
-  <meta name="apple-mobile-web-app-title" content="هكتار للقياس">
-  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-  <title>هكتار | رفع المقاسات</title>
-  <link rel="manifest" href="manifest.json">
-  <link rel="icon" href="assets/icon-192.png" type="image/png">
-  <link rel="apple-touch-icon" href="assets/apple-touch-icon.png">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Readex+Pro:wght@300;400;500;600;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="styles.css">
+  <?!= include("styles"); ?>
 </head>
 <body>
-  <main id="view" class="app"></main>
+  <main id="view" class="app">
+    <div class="overlay" style="position:fixed;background:var(--navy)"><div><div class="msg">جاري التحميل…</div><div class="progress"><i></i></div></div></div>
+  </main>
   <div id="toast" class="toast" hidden></div>
   <div id="pdf-stage" aria-hidden="true"></div>
 
-  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
-  <script src="config.js"></script>
-  <script src="app.js"></script>
+  <?!= include("assets"); ?>
+  <?!= include("app"); ?>
 </body>
 </html>

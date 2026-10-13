@@ -1,17 +1,29 @@
+<script>
 "use strict";
 
-const BUCKET = "photos";
 const DEFAULT_MATERIALS = ["بديل خشب", "بديل رخام", "بديل شيبورد", "جبس بورد", "دهان", "ورق جدران"];
 const MAX_IMG = 1600;
+const THUMB_IMG = 480;
 const COMPANY = { ar: "شركة هكتار الحديثة", en: "MODERN HECTAR COMPANY" };
 
-const cfg = window.APP_CONFIG || {};
 const view = document.getElementById("view");
-const sb = cfg.SUPABASE_URL && cfg.SUPABASE_ANON_KEY
-  ? supabase.createClient(cfg.SUPABASE_URL, cfg.SUPABASE_ANON_KEY)
-  : null;
-let user = null;
+const A = window.ASSETS;
 let listFilter = "all";
+let driveUrl = null;
+
+// google.script.run as promises: api.fn(args) → Promise
+const api = new Proxy({}, {
+  get: (_, fn) => (...args) => new Promise((resolve, reject) =>
+    google.script.run.withSuccessHandler(resolve).withFailureHandler(reject)[fn](...args)),
+});
+
+// photos come from Drive as data URLs; cache them for the session
+const imageCache = {};
+async function images(ids) {
+  const missing = [...new Set(ids.filter((id) => id && !imageCache[id]))];
+  for (let i = 0; i < missing.length; i += 6) Object.assign(imageCache, await api.getImages(missing.slice(i, i + 6)));
+  return imageCache;
+}
 
 /* ---------- icons ---------- */
 const ICONS = {
@@ -34,6 +46,7 @@ const ICONS = {
   calendar: '<rect x="4" y="5" width="16" height="15" rx="2"/><path d="M4 10h16M9 3v4M15 3v4"/>',
   check: '<path d="M5 12l5 5 9-10"/>',
   shield: '<path d="M12 3l7 3v6c0 4.5-3 7.5-7 9-4-1.5-7-4.5-7-9V6z"/><path d="M9 12l2 2 4-4"/>',
+  folder: '<path d="M3 6h6l2 2h10v11H3z"/>',
   ruler: '<path d="M3 17L17 3l4 4L7 21z"/><path d="M7 13l2 2M10 10l2 2M13 7l2 2"/>',
 };
 const ic = (n, cls = "") => `<svg class="ico ${cls}" viewBox="0 0 24 24" aria-hidden="true">${ICONS[n]}</svg>`;
@@ -59,7 +72,7 @@ function toast(msg, ms = 2600) {
 function busy(msg) {
   const el = document.createElement("div");
   el.className = "overlay";
-  el.innerHTML = `<div><img src="assets/mark-white.png" alt=""><div class="msg">${esc(msg)}</div><div class="progress"><i></i></div></div>`;
+  el.innerHTML = `<div><img src="${A.markWhite}" alt=""><div class="msg">${esc(msg)}</div><div class="progress"><i></i></div></div>`;
   document.body.appendChild(el);
   return { set: (m) => (el.querySelector(".msg").textContent = m), done: () => el.remove() };
 }
@@ -80,38 +93,23 @@ function saveCustomMaterial(m) {
 }
 
 // Resize + compress a camera photo before upload (phones produce 4–8 MB images)
-function compressImage(file) {
+function compressImage(file, max = MAX_IMG, quality = 0.85) {
   return new Promise((resolve, reject) => {
     const img = new Image();
     const url = URL.createObjectURL(file);
     img.onload = () => {
-      const scale = Math.min(1, MAX_IMG / Math.max(img.width, img.height));
+      const scale = Math.min(1, max / Math.max(img.width, img.height));
       const c = document.createElement("canvas");
       c.width = Math.round(img.width * scale);
       c.height = Math.round(img.height * scale);
       c.getContext("2d").drawImage(img, 0, 0, c.width, c.height);
       URL.revokeObjectURL(url);
-      c.toBlob((b) => (b ? resolve(b) : reject(new Error("تعذر ضغط الصورة"))), "image/jpeg", 0.85);
+      resolve(c.toDataURL("image/jpeg", quality));
     };
     img.onerror = () => { URL.revokeObjectURL(url); reject(new Error("تعذر قراءة الصورة")); };
     img.src = url;
   });
 }
-
-async function signedUrls(paths) {
-  const list = [...new Set(paths.filter(Boolean))];
-  if (!list.length) return {};
-  const { data, error } = await sb.storage.from(BUCKET).createSignedUrls(list, 3600);
-  if (error) throw error;
-  return Object.fromEntries(data.filter((d) => d.signedUrl).map((d) => [d.path, d.signedUrl]));
-}
-
-const blobToDataUrl = (blob) => new Promise((res, rej) => {
-  const r = new FileReader();
-  r.onload = () => res(r.result);
-  r.onerror = rej;
-  r.readAsDataURL(blob);
-});
 
 const imgSize = (src) => new Promise((res) => {
   const i = new Image();
@@ -133,8 +131,6 @@ const statusPill = (p) => p.status === "closed"
 /* ---------- router ---------- */
 async function route() {
   window.scrollTo(0, 0);
-  if (!sb) return renderSetup();
-  if (!user) return renderLogin();
   const parts = location.hash.replace(/^#\/?/, "").split("/").filter(Boolean);
   try {
     if (parts[0] === "new") return renderNewProject();
@@ -144,57 +140,23 @@ async function route() {
   } catch (e) { fail(e); }
 }
 
-function renderSetup() {
-  view.innerHTML = `<div class="setup"><div class="empty"><div class="em-ico">${ic("shield")}</div>
-    <b>التطبيق غير مربوط بقاعدة البيانات</b>أضف SUPABASE_URL و SUPABASE_ANON_KEY في ملف config.js</div></div>`;
-}
-
-/* ---------- login ---------- */
-function renderLogin() {
-  view.innerHTML = `
-    <section class="login">
-      <div class="brand"><img src="assets/logo-white.png" alt="${COMPANY.ar}"></div>
-      <form class="panel form" id="f">
-        <div><h2>تسجيل الدخول</h2><p class="lead">بوابة رفع المقاسات الخاصة</p></div>
-        <label class="field"><span>البريد الإلكتروني</span>
-          <div class="input-icon">${ic("user")}<input class="input ltr" type="email" name="email" autocomplete="username" required></div></label>
-        <label class="field"><span>كلمة المرور</span>
-          <div class="input-icon">${ic("lock")}<input class="input ltr" type="password" name="password" autocomplete="current-password" required></div></label>
-        <button class="btn btn-primary btn-block">دخول</button>
-        <div class="secure">${ic("shield", "ico-sm")} وصول خاص ومشفّر</div>
-      </form>
-    </section>`;
-  document.getElementById("f").onsubmit = async (e) => {
-    e.preventDefault();
-    const fd = new FormData(e.target);
-    const btn = e.target.querySelector("button");
-    btn.disabled = true;
-    const { error } = await sb.auth.signInWithPassword({ email: fd.get("email"), password: fd.get("password") });
-    btn.disabled = false;
-    if (error) toast("بيانات الدخول غير صحيحة");
-  };
-}
-
 /* ---------- projects list ---------- */
 async function renderProjects() {
-  const { data: projects, error } = await sb
-    .from("projects")
-    .select("*, walls(photo_path, width_cm, height_cm, created_at)")
-    .order("created_at", { ascending: false });
-  if (error) throw error;
+  const projects = await api.listProjects();
+  projects.sort((a, b) => b.created_at.localeCompare(a.created_at));
 
   for (const p of projects) {
     p.walls.sort((a, b) => a.created_at.localeCompare(b.created_at));
     p.area = p.walls.reduce((s, w) => s + areaM2(w), 0);
-    p.cover = p.walls.find((w) => w.photo_path)?.photo_path;
+    p.cover = p.walls.find((w) => w.thumb_id)?.thumb_id;
   }
-  const covers = await signedUrls(projects.map((p) => p.cover));
+  const covers = await images(projects.map((p) => p.cover));
   const open = projects.filter((p) => p.status !== "closed").length;
   const totalArea = projects.reduce((s, p) => s + p.area, 0);
 
   const card = (p) => `
     <a class="card pcard" href="#/p/${p.id}" data-status="${p.status}" data-q="${esc([p.name, p.client, p.location].join(" ").toLowerCase())}">
-      <div class="thumb">${covers[p.cover] ? `<img src="${covers[p.cover]}" alt="" loading="lazy">` : `<img class="ph" src="assets/mark-white.png" alt="">`}</div>
+      <div class="thumb">${covers[p.cover] ? `<img src="${covers[p.cover]}" alt="" loading="lazy">` : `<img class="ph" src="${A.markWhite}" alt="">`}</div>
       <div class="body">
         <div class="name">${esc(p.name)}</div>
         <div class="meta">${esc([p.client, p.location].filter(Boolean).join(" · ") || dateAr(p.created_at))}</div>
@@ -210,8 +172,8 @@ async function renderProjects() {
   view.innerHTML = `
     <header class="hero" style="padding-bottom:44px">
       <div class="hero-bar">
-        <div class="hero-brand"><img src="assets/mark-white.png" alt=""><div><div class="t">${COMPANY.ar}</div><div class="s">MEASUREMENTS</div></div></div>
-        <button class="icon-btn" id="logout" aria-label="خروج">${ic("logout")}</button>
+        <div class="hero-brand"><img src="${A.markWhite}" alt=""><div><div class="t">${COMPANY.ar}</div><div class="s">MEASUREMENTS</div></div></div>
+        <button class="icon-btn" id="drive" aria-label="مجلد Drive">${ic("folder")}</button>
       </div>
       <div class="eyebrow">لوحة المشاريع</div>
       <h1>رفع المقاسات</h1>
@@ -229,7 +191,7 @@ async function renderProjects() {
     <div class="empty" id="empty" hidden><div class="em-ico">${ic("ruler")}</div><b>${projects.length ? "لا توجد نتائج" : "ابدأ أول مشروع"}</b>${projects.length ? "جرّب كلمة بحث أخرى" : "أنشئ مشروعاً وصوّر أول جدار خلال ثوانٍ"}</div>
     <div class="actionbar"><div class="inner"><a class="btn btn-primary" href="#/new">${ic("plus")} مشروع جديد</a></div></div>`;
 
-  document.getElementById("logout").onclick = () => { if (confirm("تسجيل الخروج؟")) sb.auth.signOut(); };
+  document.getElementById("drive").onclick = () => driveUrl && window.open(driveUrl, "_blank");
   const q = document.getElementById("q");
   const seg = document.getElementById("seg");
   const apply = () => {
@@ -251,7 +213,7 @@ async function renderProjects() {
 function renderNewProject() {
   view.innerHTML = `
     <header class="hero" style="padding-bottom:40px">
-      <div class="hero-bar"><a class="icon-btn" href="#/" aria-label="رجوع">${ic("back")}</a><img src="assets/mark-white.png" alt="" style="width:30px"></div>
+      <div class="hero-bar"><a class="icon-btn" href="#/" aria-label="رجوع">${ic("back")}</a><img src="${A.markWhite}" alt="" style="width:30px"></div>
       <div class="eyebrow">مشروع جديد</div>
       <h1>بيانات المشروع</h1>
       <div class="sub">بعد الإنشاء تفتح الكاميرا مباشرة لتصوير أول جدار</div>
@@ -265,31 +227,26 @@ function renderNewProject() {
   document.getElementById("f").onsubmit = async (e) => {
     e.preventDefault();
     const fd = new FormData(e.target);
-    const { data, error } = await sb.from("projects").insert({
-      name: fd.get("name").trim(),
-      client: fd.get("client").trim() || null,
-      location: fd.get("location").trim() || null,
-    }).select().single();
-    if (error) return fail(error);
-    history.replaceState(null, "", `#/p/${data.id}`);
-    go(`#/p/${data.id}/wall/new`);
+    const btn = e.target.querySelector("button");
+    btn.disabled = true;
+    try {
+      const data = await api.createProject({
+        name: fd.get("name").trim(),
+        client: fd.get("client").trim() || null,
+        location: fd.get("location").trim() || null,
+      });
+      history.replaceState(null, "", `#/p/${data.id}`);
+      go(`#/p/${data.id}/wall/new`);
+    } catch (err) { btn.disabled = false; fail(err); }
   };
 }
 
 /* ---------- project detail ---------- */
-async function loadProject(id) {
-  const [{ data: project, error: e1 }, { data: walls, error: e2 }] = await Promise.all([
-    sb.from("projects").select("*").eq("id", id).single(),
-    sb.from("walls").select("*").eq("project_id", id).order("created_at"),
-  ]);
-  if (e1) throw e1;
-  if (e2) throw e2;
-  return { project, walls };
-}
+const loadProject = (id) => api.getProject(id);
 
 async function renderProject(id) {
   const { project: p, walls } = await loadProject(id);
-  const urls = await signedUrls(walls.map((w) => w.photo_path));
+  const urls = await images(walls.map((w) => w.thumb_id));
   const total = walls.reduce((s, w) => s + areaM2(w), 0);
   const closed = p.status === "closed";
   const mats = materialTotals(walls);
@@ -324,8 +281,8 @@ async function renderProject(id) {
       <div class="section-title"><h2>الجدران</h2><span class="count">${walls.length} جدار</span></div>
       ${walls.length ? `<div class="wlist">
         ${walls.map((w, i) => `
-          <a class="card wcard" href="${closed ? (urls[w.photo_path] || "#") : `#/p/${p.id}/wall/${w.id}`}" ${closed ? 'target="_blank" rel="noopener"' : ""}>
-            <div class="photo">${urls[w.photo_path] ? `<img src="${urls[w.photo_path]}" alt="" loading="lazy">` : ic("camera")}<span class="code">${code(i)}</span></div>
+          <a class="card wcard" href="#/p/${p.id}/wall/${w.id}">
+            <div class="photo">${urls[w.thumb_id] ? `<img src="${urls[w.thumb_id]}" alt="">` : ic("camera")}<span class="code">${code(i)}</span></div>
             <div class="body">
               <div class="name">${esc(w.name)}</div>
               <div class="dims num" style="text-align:right">${dims(w)} <small>cm</small></div>
@@ -343,7 +300,7 @@ async function renderProject(id) {
 
     <div class="actionbar"><div class="inner">
       ${closed
-        ? `<button class="btn btn-primary grow" id="pdf">${ic("download")} تحميل التقرير PDF</button><button class="btn" id="regen" aria-label="إعادة إصدار">${ic("refresh")}</button>`
+        ? `<button class="btn btn-primary grow" id="pdf">${ic("file")} فتح التقرير PDF</button><button class="btn" id="regen" aria-label="إعادة إصدار">${ic("refresh")}</button>`
         : `<button class="btn btn-primary grow" id="add">${ic("camera")} إضافة جدار</button>${walls.length ? `<button class="btn btn-accent" id="close">${ic("lock")} إقفال</button>` : ""}`}
     </div></div>`;
 
@@ -351,24 +308,18 @@ async function renderProject(id) {
   on("add", () => go(`#/p/${p.id}/wall/new`));
   on("close", () => { if (confirm("إقفال المشروع وإصدار التقرير PDF؟")) closeProject(p, walls); });
   on("regen", () => { if (confirm("إعادة إصدار التقرير؟")) closeProject(p, walls); });
-  on("pdf", () => downloadPdf(p));
+  on("pdf", () => openPdf(p));
   on("reopen", async () => {
-    const { error } = await sb.from("projects").update({ status: "open" }).eq("id", p.id);
-    if (error) return fail(error);
-    route();
+    try { await api.setStatus(p.id, "open"); route(); } catch (e) { fail(e); }
   });
   on("del", () => deleteProject(p));
 }
 
 async function deleteProject(p) {
-  if (!confirm(`حذف «${p.name}» نهائياً مع كل الصور والتقرير؟`)) return;
+  if (!confirm(`حذف «${p.name}» مع كل الصور والتقرير؟ (تنتقل لسلة المهملات في Drive)`)) return;
   const b = busy("جاري الحذف…");
   try {
-    const folder = `${user.id}/${p.id}`;
-    const { data: files } = await sb.storage.from(BUCKET).list(folder, { limit: 1000 });
-    if (files?.length) await sb.storage.from(BUCKET).remove(files.map((f) => `${folder}/${f.name}`));
-    const { error } = await sb.from("projects").delete().eq("id", p.id);
-    if (error) throw error;
+    await api.deleteProject(p.id);
     go("#/");
   } catch (e) { fail(e); } finally { b.done(); }
 }
@@ -379,11 +330,11 @@ async function renderWallForm(projectId, wallId) {
   const wall = wallId ? walls.find((w) => w.id === wallId) : null;
   if (wallId && !wall) return go(`#/p/${projectId}`);
   const idx = wall ? walls.indexOf(wall) : walls.length;
-  const urls = wall?.photo_path ? await signedUrls([wall.photo_path]) : {};
+  const urls = wall?.photo_id ? await images([wall.photo_id]) : {};
   const selected = new Set(wall?.materials || []);
   const options = [...new Set([...DEFAULT_MATERIALS, ...customMaterials(), ...selected])];
-  const photoUrl = urls[wall?.photo_path];
-  let photoBlob = null;
+  const photoUrl = urls[wall?.photo_id];
+  let photo = null, thumb = null;
 
   view.innerHTML = `
     <label class="capture" id="cap">
@@ -444,9 +395,9 @@ async function renderWallForm(projectId, wallId) {
     const file = cam.files[0];
     if (!file) return;
     try {
-      photoBlob = await compressImage(file);
+      [photo, thumb] = await Promise.all([compressImage(file), compressImage(file, THUMB_IMG, 0.75)]);
       cap.querySelectorAll(":scope > img, .empty-cam").forEach((el) => el.remove());
-      cap.insertAdjacentHTML("afterbegin", `<img src="${URL.createObjectURL(photoBlob)}" alt="">`);
+      cap.insertAdjacentHTML("afterbegin", `<img src="${photo}" alt="">`);
       document.getElementById("retake").hidden = false;
       update();
       form.width.focus();
@@ -481,10 +432,7 @@ async function renderWallForm(projectId, wallId) {
   if (wall) document.getElementById("delw").onclick = async (e) => {
     e.preventDefault();
     if (!confirm("حذف هذا الجدار؟")) return;
-    if (wall.photo_path) await sb.storage.from(BUCKET).remove([wall.photo_path]);
-    const { error } = await sb.from("walls").delete().eq("id", wall.id);
-    if (error) return fail(error);
-    go(`#/p/${projectId}`);
+    try { await api.deleteWall(wall.id); go(`#/p/${projectId}`); } catch (err) { fail(err); }
   };
 
   form.onsubmit = async (e) => {
@@ -492,27 +440,19 @@ async function renderWallForm(projectId, wallId) {
     const next = e.submitter?.value === "next";
     const b = busy("جاري الحفظ…");
     try {
-      let photo_path = wall?.photo_path || null;
-      if (photoBlob) {
-        const newPath = `${user.id}/${projectId}/${crypto.randomUUID()}.jpg`;
-        const { error } = await sb.storage.from(BUCKET).upload(newPath, photoBlob, { contentType: "image/jpeg" });
-        if (error) throw error;
-        if (photo_path) await sb.storage.from(BUCKET).remove([photo_path]);
-        photo_path = newPath;
-      }
       const row = {
+        id: wall?.id || null,
         project_id: projectId,
         name: form.name.value.trim() || `جدار ${idx + 1}`,
         width_cm: parseFloat(form.width.value) || null,
         height_cm: parseFloat(form.height.value) || null,
         materials: [...selected],
         notes: form.notes.value.trim() || null,
-        photo_path,
+        photo,
+        thumb,
       };
-      const { error } = wall
-        ? await sb.from("walls").update(row).eq("id", wall.id)
-        : await sb.from("walls").insert(row);
-      if (error) throw error;
+      const saved = await api.saveWall(row);
+      if (photo) Object.assign(imageCache, { [saved.photo_id]: photo, [saved.thumb_id]: thumb });
       toast(`تم حفظ ${row.name} ✓`);
       if (next) {
         // hashchange won't fire for the same hash, so re-render directly
@@ -530,13 +470,14 @@ async function buildPdf(p, walls, onProgress) {
   await Promise.all(["400", "500", "600", "700"].map((w) => document.fonts.load(`${w} 16px "Readex Pro"`, "عربي MH")));
 
   const photos = {};
-  for (const [i, w] of walls.entries()) {
-    onProgress(`تجهيز الصور ${i + 1} / ${walls.length}`);
-    if (!w.photo_path) continue;
-    const { data, error } = await sb.storage.from(BUCKET).download(w.photo_path);
-    if (error) continue;
-    const src = await blobToDataUrl(data);
-    photos[w.id] = { src, ...(await imgSize(src)) };
+  const withPhoto = walls.filter((w) => w.photo_id);
+  for (let i = 0; i < withPhoto.length; i += 4) {
+    onProgress(`تجهيز الصور ${Math.min(i + 4, withPhoto.length)} / ${withPhoto.length}`);
+    await images(withPhoto.slice(i, i + 4).map((w) => w.photo_id));
+  }
+  for (const w of withPhoto) {
+    const src = imageCache[w.photo_id];
+    if (src) photos[w.id] = { src, ...(await imgSize(src)) };
   }
 
   const total = walls.reduce((s, w) => s + areaM2(w), 0);
@@ -554,7 +495,7 @@ async function buildPdf(p, walls, onProgress) {
 
   const head = () => `
     <div class="ph-head">
-      <div class="ph-brand"><img src="assets/mark.png" alt=""><div><div class="t">${COMPANY.ar}</div><div class="s">${COMPANY.en}</div></div></div>
+      <div class="ph-brand"><img src="${A.mark}" alt=""><div><div class="t">${COMPANY.ar}</div><div class="s">${COMPANY.en}</div></div></div>
       <div class="ph-meta"><b>${esc(p.name)}</b><br>تقرير رفع مقاسات · <span class="num">${no}</span></div>
     </div>`;
   const foot = (n) => `
@@ -578,8 +519,8 @@ async function buildPdf(p, walls, onProgress) {
   pages.push(`
     <div class="cv-top">
       <div class="cv-stripes"></div><div class="cv-glow"></div>
-      <img class="cv-mark" src="assets/mark-white.png" alt="">
-      <img class="cv-logo" src="assets/logo-white.png" alt="">
+      <img class="cv-mark" src="${A.markWhite}" alt="">
+      <img class="cv-logo" src="${A.logoWhite}" alt="">
       <div class="cv-title-block">
         <div class="cv-kicker">تقرير رفع مقاسات</div>
         <div class="cv-title">${esc(p.name)}</div>
@@ -677,59 +618,29 @@ async function buildPdf(p, walls, onProgress) {
     if (i > 0) pdf.addPage();
     pdf.addImage(canvas.toDataURL("image/jpeg", 0.9), "JPEG", 0, 0, 210, 297, undefined, "FAST");
   }
-  return pdf.output("blob");
+  return pdf.output("datauristring").split(",")[1];
 }
 
 const pdfName = (p) => `${reportNo(p)} ${p.name.replace(/[\\/:*?"<>|]+/g, "-")}.pdf`;
 
-function saveBlob(blob, name) {
-  const a = document.createElement("a");
-  a.href = URL.createObjectURL(blob);
-  a.download = name;
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  setTimeout(() => URL.revokeObjectURL(a.href), 10000);
-}
-
 async function closeProject(p, walls) {
   const b = busy("جاري إصدار التقرير…");
   try {
-    const blob = await buildPdf(p, walls, b.set);
-    b.set("حفظ التقرير…");
-    const path = `${user.id}/${p.id}/report.pdf`;
-    const { error: upErr } = await sb.storage.from(BUCKET).upload(path, blob, { contentType: "application/pdf", upsert: true });
-    if (upErr) throw upErr;
-    const { error } = await sb.from("projects").update({ status: "closed", closed_at: new Date().toISOString(), pdf_path: path }).eq("id", p.id);
-    if (error) throw error;
-    saveBlob(blob, pdfName(p));
-    toast("تم إقفال المشروع وحفظ التقرير ✓");
+    const base64 = await buildPdf(p, walls, b.set);
+    b.set("حفظ التقرير في Drive…");
+    await api.saveReport(p.id, base64, pdfName(p));
+    toast("تم إقفال المشروع وحفظ التقرير في Drive ✓");
     route();
   } catch (e) { fail(e); } finally { b.done(); }
 }
 
-async function downloadPdf(p) {
-  if (!p.pdf_path) return toast("لا يوجد تقرير محفوظ — اضغط إعادة الإصدار");
-  const b = busy("جاري التحميل…");
-  try {
-    const { data, error } = await sb.storage.from(BUCKET).download(p.pdf_path);
-    if (error) throw error;
-    saveBlob(data, pdfName(p));
-  } catch (e) { fail(e); } finally { b.done(); }
+function openPdf(p) {
+  if (!p.pdf_url) return toast("لا يوجد تقرير محفوظ — اضغط إعادة الإصدار");
+  window.open(p.pdf_url, "_blank");
 }
 
 /* ---------- boot ---------- */
 window.addEventListener("hashchange", route);
-if (sb) {
-  let first = true;
-  sb.auth.onAuthStateChange((_event, session) => {
-    const prev = user?.id;
-    user = session?.user || null;
-    // only re-render on real login/logout — SIGNED_IN also fires on tab refocus and would wipe an open form.
-    // defer: calling supabase inside this callback can deadlock the auth lock
-    if (first || prev !== user?.id) setTimeout(route, 0);
-    first = false;
-  });
-} else {
-  route();
-}
+route();
+api.rootUrl().then((u) => (driveUrl = u)).catch(() => {});
+</script>
