@@ -1,4 +1,3 @@
-<style>
 :root {
   --navy: #173653;
   --navy-2: #1f4468;
@@ -365,4 +364,3 @@ textarea.input { min-height: 88px; resize: vertical; }
 .mtags { display: flex; flex-wrap: wrap; gap: 5px; }
 .mtags span { background: #fbf1e3; color: #9a5c0b; font-size: 12px; font-weight: 600; padding: 3px 9px; border-radius: 6px; }
 .wb-notes { font-size: 12.5px; color: #44546a; line-height: 1.7; background: #f8f9fb; border-radius: 10px; padding: 9px 12px; }
-</style>

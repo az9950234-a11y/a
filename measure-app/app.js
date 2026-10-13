@@ -1,29 +1,126 @@
-<script>
 "use strict";
 
 const DEFAULT_MATERIALS = ["بديل خشب", "بديل رخام", "بديل شيبورد", "جبس بورد", "دهان", "ورق جدران"];
 const MAX_IMG = 1600;
 const THUMB_IMG = 480;
-// built from parts: Apps Script strips anything that looks like a block comment, even inside strings
-const IMAGE_ACCEPT = "image/" + "*";
+const IMAGE_ACCEPT = "image/*";
 const COMPANY = { ar: "شركة هكتار الحديثة", en: "MODERN HECTAR COMPANY" };
 
 const view = document.getElementById("view");
-const A = window.ASSETS;
+const A = { logoWhite: "assets/logo-white.png", markWhite: "assets/mark-white.png", mark: "assets/mark.png" };
 let listFilter = "all";
-let driveUrl = null;
 
-// google.script.run as promises: api.fn(args) → Promise
-const api = new Proxy({}, {
-  get: (_, fn) => (...args) => new Promise((resolve, reject) =>
-    google.script.run.withSuccessHandler(resolve).withFailureHandler(reject)[fn](...args)),
-});
+/* ---------- local database (IndexedDB on this device) ---------- */
+const uid = () => (crypto.randomUUID ? crypto.randomUUID() : Date.now().toString(36) + Math.random().toString(36).slice(2));
+const nowIso = () => new Date().toISOString();
+const req = (r) => new Promise((res, rej) => { r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); });
 
-// photos come from Drive as data URLs; cache them for the session
+let dbPromise;
+function openDb() {
+  return (dbPromise ||= new Promise((res, rej) => {
+    const r = indexedDB.open("hectar-measure", 1);
+    r.onupgradeneeded = () => {
+      const db = r.result;
+      db.createObjectStore("projects", { keyPath: "id" });
+      db.createObjectStore("walls", { keyPath: "id" }).createIndex("project_id", "project_id");
+      db.createObjectStore("files"); // id → Blob (photos, thumbnails, PDF reports)
+    };
+    r.onsuccess = () => res(r.result);
+    r.onerror = () => rej(r.error);
+  }));
+}
+
+// fn may only await IndexedDB requests, otherwise the transaction auto-commits
+async function tx(stores, mode, fn) {
+  const t = (await openDb()).transaction(stores, mode);
+  const done = new Promise((res, rej) => { t.oncomplete = res; t.onerror = t.onabort = () => rej(t.error); });
+  const s = Object.fromEntries([].concat(stores).map((n) => [n, t.objectStore(n)]));
+  const result = await fn(s);
+  await done;
+  return result;
+}
+
+const api = {
+  listProjects: () => tx(["projects", "walls"], "readonly", async (s) => {
+    const [ps, ws] = await Promise.all([req(s.projects.getAll()), req(s.walls.getAll())]);
+    return ps.map((p) => ({ ...p, walls: ws.filter((w) => w.project_id === p.id) }));
+  }),
+
+  getProject: (id) => tx(["projects", "walls"], "readonly", async (s) => {
+    const project = await req(s.projects.get(id));
+    if (!project) throw new Error("المشروع غير موجود");
+    const walls = await req(s.walls.index("project_id").getAll(id));
+    walls.sort((a, b) => a.created_at.localeCompare(b.created_at));
+    return { project, walls };
+  }),
+
+  async createProject(d) {
+    const p = { id: uid(), name: d.name, client: d.client, location: d.location, status: "open", created_at: nowIso(), closed_at: null, pdf_id: null };
+    await tx("projects", "readwrite", (s) => req(s.projects.put(p)));
+    navigator.storage?.persist?.();
+    return p;
+  },
+
+  saveWall: (d) => tx(["walls", "files"], "readwrite", async (s) => {
+    const wall = (d.id && (await req(s.walls.get(d.id)))) ||
+      { id: uid(), project_id: d.project_id, created_at: nowIso(), photo_id: null, thumb_id: null };
+    Object.assign(wall, { name: d.name, width_cm: d.width_cm, height_cm: d.height_cm, materials: d.materials, notes: d.notes });
+    if (d.photo) {
+      if (wall.photo_id) { s.files.delete(wall.photo_id); s.files.delete(wall.thumb_id); }
+      wall.photo_id = uid();
+      wall.thumb_id = uid();
+      s.files.put(d.photo, wall.photo_id);
+      s.files.put(d.thumb, wall.thumb_id);
+    }
+    await req(s.walls.put(wall));
+    return wall;
+  }),
+
+  deleteWall: (id) => tx(["walls", "files"], "readwrite", async (s) => {
+    const w = await req(s.walls.get(id));
+    if (!w) return;
+    [w.photo_id, w.thumb_id].filter(Boolean).forEach((f) => s.files.delete(f));
+    s.walls.delete(id);
+  }),
+
+  deleteProject: (id) => tx(["projects", "walls", "files"], "readwrite", async (s) => {
+    const p = await req(s.projects.get(id));
+    const walls = await req(s.walls.index("project_id").getAll(id));
+    for (const w of walls) {
+      [w.photo_id, w.thumb_id].filter(Boolean).forEach((f) => s.files.delete(f));
+      s.walls.delete(w.id);
+    }
+    if (p?.pdf_id) s.files.delete(p.pdf_id);
+    s.projects.delete(id);
+  }),
+
+  setStatus: (id, status) => tx("projects", "readwrite", async (s) => {
+    const p = await req(s.projects.get(id));
+    p.status = status;
+    await req(s.projects.put(p));
+  }),
+
+  saveReport: (id, blob) => tx(["projects", "files"], "readwrite", async (s) => {
+    const p = await req(s.projects.get(id));
+    p.pdf_id = `pdf:${id}`;
+    p.status = "closed";
+    p.closed_at = nowIso();
+    s.files.put(blob, p.pdf_id);
+    await req(s.projects.put(p));
+    return p;
+  }),
+
+  getFile: (id) => tx("files", "readonly", (s) => req(s.files.get(id))),
+};
+
+// object URLs for stored photos, cached for the session
 const imageCache = {};
 async function images(ids) {
   const missing = [...new Set(ids.filter((id) => id && !imageCache[id]))];
-  for (let i = 0; i < missing.length; i += 6) Object.assign(imageCache, await api.getImages(missing.slice(i, i + 6)));
+  if (missing.length) {
+    const blobs = await tx("files", "readonly", (s) => Promise.all(missing.map((id) => req(s.files.get(id)))));
+    missing.forEach((id, i) => { if (blobs[i]) imageCache[id] = URL.createObjectURL(blobs[i]); });
+  }
   return imageCache;
 }
 
@@ -49,6 +146,9 @@ const ICONS = {
   check: '<path d="M5 12l5 5 9-10"/>',
   shield: '<path d="M12 3l7 3v6c0 4.5-3 7.5-7 9-4-1.5-7-4.5-7-9V6z"/><path d="M9 12l2 2 4-4"/>',
   folder: '<path d="M3 6h6l2 2h10v11H3z"/>',
+  settings: '<circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M4.2 4.2l2.1 2.1M17.7 17.7l2.1 2.1M2 12h3M19 12h3M4.2 19.8l2.1-2.1M17.7 6.3l2.1-2.1"/>',
+  share: '<path d="M12 3v12M7 8l5-5 5 5M5 13v7h14v-7"/>',
+  upload: '<path d="M12 15V4M7 9l5-5 5 5M5 20h14"/>',
   ruler: '<path d="M3 17L17 3l4 4L7 21z"/><path d="M7 13l2 2M10 10l2 2M13 7l2 2"/>',
 };
 const ic = (n, cls = "") => `<svg class="ico ${cls}" viewBox="0 0 24 24" aria-hidden="true">${ICONS[n]}</svg>`;
@@ -94,7 +194,7 @@ function saveCustomMaterial(m) {
   } catch { /* storage unavailable */ }
 }
 
-// Resize + compress a camera photo before upload (phones produce 4–8 MB images)
+// Resize + compress camera photos (phones produce 4–8 MB images)
 function compressImage(file, max = MAX_IMG, quality = 0.85) {
   return new Promise((resolve, reject) => {
     const img = new Image();
@@ -106,7 +206,7 @@ function compressImage(file, max = MAX_IMG, quality = 0.85) {
       c.height = Math.round(img.height * scale);
       c.getContext("2d").drawImage(img, 0, 0, c.width, c.height);
       URL.revokeObjectURL(url);
-      resolve(c.toDataURL("image/jpeg", quality));
+      c.toBlob((b) => (b ? resolve(b) : reject(new Error("تعذر ضغط الصورة"))), "image/jpeg", quality);
     };
     img.onerror = () => { URL.revokeObjectURL(url); reject(new Error("تعذر قراءة الصورة")); };
     img.src = url;
@@ -136,6 +236,7 @@ async function route() {
   const parts = location.hash.replace(/^#\/?/, "").split("/").filter(Boolean);
   try {
     if (parts[0] === "new") return renderNewProject();
+    if (parts[0] === "settings") return await renderSettings();
     if (parts[0] === "p" && parts[1] && parts[2] === "wall") return await renderWallForm(parts[1], parts[3] === "new" ? null : parts[3]);
     if (parts[0] === "p" && parts[1]) return await renderProject(parts[1]);
     return await renderProjects();
@@ -175,7 +276,7 @@ async function renderProjects() {
     <header class="hero" style="padding-bottom:44px">
       <div class="hero-bar">
         <div class="hero-brand"><img src="${A.markWhite}" alt=""><div><div class="t">${COMPANY.ar}</div><div class="s">MEASUREMENTS</div></div></div>
-        <button class="icon-btn" id="drive" aria-label="مجلد Drive">${ic("folder")}</button>
+        <a class="icon-btn" href="#/settings" aria-label="الإعدادات والنسخ الاحتياطي">${ic("settings")}</a>
       </div>
       <div class="eyebrow">لوحة المشاريع</div>
       <h1>رفع المقاسات</h1>
@@ -193,7 +294,6 @@ async function renderProjects() {
     <div class="empty" id="empty" hidden><div class="em-ico">${ic("ruler")}</div><b>${projects.length ? "لا توجد نتائج" : "ابدأ أول مشروع"}</b>${projects.length ? "جرّب كلمة بحث أخرى" : "أنشئ مشروعاً وصوّر أول جدار خلال ثوانٍ"}</div>
     <div class="actionbar"><div class="inner"><a class="btn btn-primary" href="#/new">${ic("plus")} مشروع جديد</a></div></div>`;
 
-  document.getElementById("drive").onclick = () => driveUrl && window.open(driveUrl, "_blank");
   const q = document.getElementById("q");
   const seg = document.getElementById("seg");
   const apply = () => {
@@ -253,6 +353,8 @@ async function renderProject(id) {
   const closed = p.status === "closed";
   const mats = materialTotals(walls);
   const maxMat = mats[0]?.[1] || 1;
+  // loaded up front so the share button runs inside the tap (iOS requires a direct user gesture)
+  const pdfBlob = closed && p.pdf_id ? await api.getFile(p.pdf_id) : null;
 
   view.innerHTML = `
     <header class="hero">
@@ -302,7 +404,7 @@ async function renderProject(id) {
 
     <div class="actionbar"><div class="inner">
       ${closed
-        ? `<button class="btn btn-primary grow" id="pdf">${ic("file")} فتح التقرير PDF</button><button class="btn" id="regen" aria-label="إعادة إصدار">${ic("refresh")}</button>`
+        ? `<button class="btn btn-primary grow" id="share">${ic("share")} مشاركة التقرير</button><button class="btn" id="pdf" aria-label="تحميل">${ic("download")}</button><button class="btn" id="regen" aria-label="إعادة إصدار">${ic("refresh")}</button>`
         : `<button class="btn btn-primary grow" id="add">${ic("camera")} إضافة جدار</button>${walls.length ? `<button class="btn btn-accent" id="close">${ic("lock")} إقفال</button>` : ""}`}
     </div></div>`;
 
@@ -310,7 +412,8 @@ async function renderProject(id) {
   on("add", () => go(`#/p/${p.id}/wall/new`));
   on("close", () => { if (confirm("إقفال المشروع وإصدار التقرير PDF؟")) closeProject(p, walls); });
   on("regen", () => { if (confirm("إعادة إصدار التقرير؟")) closeProject(p, walls); });
-  on("pdf", () => openPdf(p));
+  on("share", () => (pdfBlob ? shareFile(pdfBlob, pdfName(p)) : toast("لا يوجد تقرير محفوظ — اضغط إعادة الإصدار")));
+  on("pdf", () => (pdfBlob ? saveBlob(pdfBlob, pdfName(p)) : toast("لا يوجد تقرير محفوظ — اضغط إعادة الإصدار")));
   on("reopen", async () => {
     try { await api.setStatus(p.id, "open"); route(); } catch (e) { fail(e); }
   });
@@ -318,7 +421,7 @@ async function renderProject(id) {
 }
 
 async function deleteProject(p) {
-  if (!confirm(`حذف «${p.name}» مع كل الصور والتقرير؟ (تنتقل لسلة المهملات في Drive)`)) return;
+  if (!confirm(`حذف «${p.name}» مع كل الصور والتقرير نهائياً؟`)) return;
   const b = busy("جاري الحذف…");
   try {
     await api.deleteProject(p.id);
@@ -399,7 +502,7 @@ async function renderWallForm(projectId, wallId) {
     try {
       [photo, thumb] = await Promise.all([compressImage(file), compressImage(file, THUMB_IMG, 0.75)]);
       cap.querySelectorAll(":scope > img, .empty-cam").forEach((el) => el.remove());
-      cap.insertAdjacentHTML("afterbegin", `<img src="${photo}" alt="">`);
+      cap.insertAdjacentHTML("afterbegin", `<img src="${URL.createObjectURL(photo)}" alt="">`);
       document.getElementById("retake").hidden = false;
       update();
       form.width.focus();
@@ -454,7 +557,7 @@ async function renderWallForm(projectId, wallId) {
         thumb,
       };
       const saved = await api.saveWall(row);
-      if (photo) Object.assign(imageCache, { [saved.photo_id]: photo, [saved.thumb_id]: thumb });
+      if (photo) Object.assign(imageCache, { [saved.photo_id]: URL.createObjectURL(photo), [saved.thumb_id]: URL.createObjectURL(thumb) });
       toast(`تم حفظ ${row.name} ✓`);
       if (next) {
         // hashchange won't fire for the same hash, so re-render directly
@@ -473,10 +576,8 @@ async function buildPdf(p, walls, onProgress) {
 
   const photos = {};
   const withPhoto = walls.filter((w) => w.photo_id);
-  for (let i = 0; i < withPhoto.length; i += 4) {
-    onProgress(`تجهيز الصور ${Math.min(i + 4, withPhoto.length)} / ${withPhoto.length}`);
-    await images(withPhoto.slice(i, i + 4).map((w) => w.photo_id));
-  }
+  onProgress("تجهيز الصور…");
+  await images(withPhoto.map((w) => w.photo_id));
   for (const w of withPhoto) {
     const src = imageCache[w.photo_id];
     if (src) photos[w.id] = { src, ...(await imgSize(src)) };
@@ -620,29 +721,142 @@ async function buildPdf(p, walls, onProgress) {
     if (i > 0) pdf.addPage();
     pdf.addImage(canvas.toDataURL("image/jpeg", 0.9), "JPEG", 0, 0, 210, 297, undefined, "FAST");
   }
-  return pdf.output("datauristring").split(",")[1];
+  return pdf.output("blob");
 }
 
 const pdfName = (p) => `${reportNo(p)} ${p.name.replace(/[\\/:*?"<>|]+/g, "-")}.pdf`;
 
+function saveBlob(blob, name) {
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = name;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 10000);
+}
+
+// share sheet on phones (WhatsApp, Files, Drive…), plain download elsewhere
+async function shareFile(blob, name) {
+  const file = new File([blob], name, { type: blob.type });
+  if (navigator.canShare?.({ files: [file] })) {
+    try { await navigator.share({ files: [file], title: name }); return; } catch (e) { if (e.name === "AbortError") return; }
+  }
+  saveBlob(blob, name);
+}
+
 async function closeProject(p, walls) {
   const b = busy("جاري إصدار التقرير…");
   try {
-    const base64 = await buildPdf(p, walls, b.set);
-    b.set("حفظ التقرير في Drive…");
-    await api.saveReport(p.id, base64, pdfName(p));
-    toast("تم إقفال المشروع وحفظ التقرير في Drive ✓");
+    const blob = await buildPdf(p, walls, b.set);
+    await api.saveReport(p.id, blob);
+    toast("تم إقفال المشروع وحفظ التقرير ✓");
     route();
   } catch (e) { fail(e); } finally { b.done(); }
 }
 
-function openPdf(p) {
-  if (!p.pdf_url) return toast("لا يوجد تقرير محفوظ — اضغط إعادة الإصدار");
-  window.open(p.pdf_url, "_blank");
+/* ---------- settings: storage + backup ---------- */
+const fmtMB = (bytes) => `${(bytes / 1048576).toFixed(1)} MB`;
+let backupBlob = null;
+
+async function renderSettings() {
+  const est = (await navigator.storage?.estimate?.()) || {};
+  const persisted = (await navigator.storage?.persisted?.()) || false;
+  const projects = await api.listProjects();
+  const stamp = new Date().toISOString().slice(0, 10);
+
+  view.innerHTML = `
+    <header class="hero" style="padding-bottom:40px">
+      <div class="hero-bar"><a class="icon-btn" href="#/" aria-label="رجوع">${ic("back")}</a><img src="${A.markWhite}" alt="" style="width:30px"></div>
+      <div class="eyebrow">الإعدادات</div>
+      <h1>البيانات والنسخ الاحتياطي</h1>
+      <div class="sub">كل المشاريع والصور محفوظة على هذا الجهاز فقط</div>
+    </header>
+    <div class="sheet form">
+      <div class="kpis" style="margin:0;grid-template-columns:repeat(2,1fr)">
+        <div class="kpi" style="background:var(--bg);border-color:var(--line)"><div class="v" style="color:var(--navy)">${projects.length}</div><div class="l" style="color:var(--muted)">مشروع محفوظ</div></div>
+        <div class="kpi" style="background:var(--bg);border-color:var(--line)"><div class="v num" style="color:var(--navy);text-align:right">${est.usage != null ? fmtMB(est.usage) : "—"}</div><div class="l" style="color:var(--muted)">المساحة المستخدمة</div></div>
+      </div>
+      <div class="area-chip" style="background:${persisted ? "var(--ok-soft)" : "var(--copper-soft)"};color:${persisted ? "var(--ok)" : "var(--copper)"}">
+        <span style="color:inherit">${persisted ? "البيانات محمية من الحذف التلقائي" : "الحماية من الحذف التلقائي غير مفعّلة"}</span>${ic(persisted ? "shield" : "lock")}
+      </div>
+      ${persisted ? "" : `<button class="btn btn-soft" id="persist">${ic("shield")} تفعيل الحماية</button>`}
+
+      <div class="field"><span>نسخة احتياطية</span>
+        <button class="btn btn-primary" id="export">${ic("download")} تجهيز نسخة احتياطية</button>
+        <div class="muted" style="font-size:12.5px;color:var(--muted)">ملف واحد فيه كل المشاريع والصور والتقارير. احفظه في Drive أو الملفات بشكل دوري.</div>
+      </div>
+      <div class="field"><span>استرجاع</span>
+        <label class="btn">${ic("upload")} استرجاع من نسخة احتياطية<input type="file" id="import" accept=".json,application/json" hidden></label>
+      </div>
+      <div class="muted" style="font-size:12.5px;color:var(--muted);line-height:1.8">
+        💡 على الآيفون: افتح التطبيق دائماً من أيقونته في الشاشة الرئيسية، لأن بيانات Safari منفصلة عن بيانات الأيقونة.
+      </div>
+    </div>`;
+
+  const persistBtn = document.getElementById("persist");
+  if (persistBtn) persistBtn.onclick = async () => {
+    const ok = await navigator.storage?.persist?.();
+    toast(ok ? "تم تفعيل الحماية ✓" : "المتصفح رفض — أضف التطبيق للشاشة الرئيسية ثم حاول مرة ثانية");
+    route();
+  };
+
+  const exportBtn = document.getElementById("export");
+  exportBtn.onclick = async () => {
+    // two taps: build first, then share inside a fresh user gesture (required on iOS)
+    if (backupBlob) return shareFile(backupBlob, `hectar-backup-${stamp}.json`);
+    const b = busy("تجهيز النسخة الاحتياطية…");
+    try {
+      backupBlob = await exportBackup();
+      exportBtn.innerHTML = `${ic("share")} حفظ النسخة (${fmtMB(backupBlob.size)})`;
+      exportBtn.classList.replace("btn-primary", "btn-accent");
+    } catch (e) { fail(e); } finally { b.done(); }
+  };
+
+  document.getElementById("import").onchange = async (e) => {
+    const file = e.target.files[0];
+    if (!file || !confirm("استرجاع النسخة؟ المشاريع الموجودة تبقى، والمكررة تُستبدل.")) return;
+    const b = busy("جاري الاسترجاع…");
+    try {
+      const n = await importBackup(file);
+      toast(`تم استرجاع ${n} مشروع ✓`);
+      go("#/");
+    } catch (err) { fail(err); } finally { b.done(); }
+  };
+}
+
+const blobToDataUrl = (blob) => new Promise((res, rej) => {
+  const r = new FileReader();
+  r.onload = () => res(r.result);
+  r.onerror = rej;
+  r.readAsDataURL(blob);
+});
+
+async function exportBackup() {
+  const { projects, walls, keys, blobs } = await tx(["projects", "walls", "files"], "readonly", async (s) => {
+    const [projects, walls, keys] = await Promise.all([req(s.projects.getAll()), req(s.walls.getAll()), req(s.files.getAllKeys())]);
+    const blobs = await Promise.all(keys.map((k) => req(s.files.get(k))));
+    return { projects, walls, keys, blobs };
+  });
+  const files = {};
+  for (const [i, k] of keys.entries()) files[k] = await blobToDataUrl(blobs[i]);
+  const data = { app: "hectar-measure", version: 1, exported_at: nowIso(), projects, walls, files };
+  return new Blob([JSON.stringify(data)], { type: "application/json" });
+}
+
+async function importBackup(file) {
+  const data = JSON.parse(await file.text());
+  if (data.app !== "hectar-measure") throw new Error("هذا الملف ليس نسخة احتياطية من التطبيق");
+  const files = await Promise.all(Object.entries(data.files || {}).map(async ([k, url]) => [k, await (await fetch(url)).blob()]));
+  await tx(["projects", "walls", "files"], "readwrite", async (s) => {
+    data.projects.forEach((p) => s.projects.put(p));
+    data.walls.forEach((w) => s.walls.put(w));
+    files.forEach(([k, blob]) => s.files.put(blob, k));
+  });
+  return data.projects.length;
 }
 
 /* ---------- boot ---------- */
 window.addEventListener("hashchange", route);
 route();
-api.rootUrl().then((u) => (driveUrl = u)).catch(() => {});
-</script>
+if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js").catch(() => {});

@@ -1,0 +1,15 @@
+# Netlify: serves the measurement app (static, no build step)
+[build]
+  base = "measure-app"
+  publish = "."
+
+[[headers]]
+  for = "/*"
+  [headers.values]
+    X-Robots-Tag = "noindex, nofollow"
+    Referrer-Policy = "same-origin"
+
+[[headers]]
+  for = "/sw.js"
+  [headers.values]
+    Cache-Control = "no-cache"
