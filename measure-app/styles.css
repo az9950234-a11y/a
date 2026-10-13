@@ -364,3 +364,31 @@ textarea.input { min-height: 88px; resize: vertical; }
 .mtags { display: flex; flex-wrap: wrap; gap: 5px; }
 .mtags span { background: #fbf1e3; color: #9a5c0b; font-size: 12px; font-weight: 600; padding: 3px 9px; border-radius: 6px; }
 .wb-notes { font-size: 12.5px; color: #44546a; line-height: 1.7; background: #f8f9fb; border-radius: 10px; padding: 9px 12px; }
+
+/* ---------- rooms + quantities ---------- */
+.room-head { display: flex; justify-content: space-between; align-items: baseline; margin: 16px 2px 8px; }
+.room-head:first-of-type { margin-top: 4px; }
+.room-head b { font-size: 15px; color: var(--navy); display: inline-flex; align-items: center; gap: 8px; }
+.room-head b::before { content: ""; width: 4px; height: 16px; border-radius: 2px; background: var(--copper); }
+.room-head > span { font-size: 12.5px; color: var(--muted); }
+.mat .sheets { color: var(--copper); font-size: 16px; }
+.mat .sheets .num { font-size: 19px; }
+.mat-meta { font-size: 12px; color: var(--muted); margin-top: 6px; }
+.section-title a.count { color: var(--copper); text-decoration: none; font-weight: 500; }
+
+.matrow { padding: 12px; display: grid; gap: 10px; }
+.matrow-top { display: flex; gap: 8px; align-items: center; }
+.matrow-top .input { font-weight: 600; padding: 10px 12px; }
+.matrow-top .icon-btn { background: var(--bg); color: var(--danger); flex: none; }
+.matrow-grid { display: grid; grid-template-columns: 1fr 1fr 0.8fr; gap: 8px; }
+.matrow-grid label { display: grid; gap: 4px; font-size: 11.5px; color: var(--muted); }
+.matrow-grid .in { display: flex; align-items: center; gap: 4px; border: 1.5px solid var(--line); border-radius: 12px; padding: 0 10px; direction: ltr; }
+.matrow-grid .in:focus-within { border-color: var(--navy); }
+.matrow-grid input { border: 0; outline: 0; font: inherit; font-size: 16px; font-weight: 600; color: var(--navy); width: 100%; min-width: 0; padding: 9px 0; background: transparent; }
+.matrow-grid i { font-style: normal; color: var(--muted); font-size: 12px; }
+
+/* PDF */
+.tbl .room-row td { background: #fbf1e3 !important; color: #9a5c0b; font-weight: 700; border-bottom: 0; }
+.tbl .room-row td span { font-weight: 400; color: #b07a35; }
+.tbl.qty td, .tbl.qty th { padding: 9px 9px; }
+.tbl td.q-cell { background: #fbf1e3 !important; color: #9a5c0b; font-weight: 700; font-size: 14px; }

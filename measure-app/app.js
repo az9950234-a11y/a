@@ -1,6 +1,16 @@
 "use strict";
 
-const DEFAULT_MATERIALS = ["بديل خشب", "بديل رخام", "بديل شيبورد", "جبس بورد", "دهان", "ورق جدران"];
+// sheet sizes in cm; materials without a size are counted in m² only
+const DEFAULT_CATALOG = [
+  { name: "بديل خشب", sheet_w: 122, sheet_h: 280, waste: 10 },
+  { name: "بديل رخام", sheet_w: 122, sheet_h: 280, waste: 10 },
+  { name: "بديل شيبورد", sheet_w: 122, sheet_h: 244, waste: 10 },
+  { name: "جبس بورد", sheet_w: 120, sheet_h: 240, waste: 10 },
+  { name: "دهان", sheet_w: null, sheet_h: null, waste: 0 },
+  { name: "ورق جدران", sheet_w: null, sheet_h: null, waste: 10 },
+];
+const DEFAULT_ROOMS = ["المجلس", "الصالة", "غرفة النوم", "غرفة الطعام", "المطبخ", "المدخل", "الممر", "دورة المياه"];
+const NO_ROOM = "بدون غرفة";
 const MAX_IMG = 1600;
 const THUMB_IMG = 480;
 const IMAGE_ACCEPT = "image/*";
@@ -18,12 +28,15 @@ const req = (r) => new Promise((res, rej) => { r.onsuccess = () => res(r.result)
 let dbPromise;
 function openDb() {
   return (dbPromise ||= new Promise((res, rej) => {
-    const r = indexedDB.open("hectar-measure", 1);
-    r.onupgradeneeded = () => {
+    const r = indexedDB.open("hectar-measure", 2);
+    r.onupgradeneeded = (e) => {
       const db = r.result;
-      db.createObjectStore("projects", { keyPath: "id" });
-      db.createObjectStore("walls", { keyPath: "id" }).createIndex("project_id", "project_id");
-      db.createObjectStore("files"); // id → Blob (photos, thumbnails, PDF reports)
+      if (e.oldVersion < 1) {
+        db.createObjectStore("projects", { keyPath: "id" });
+        db.createObjectStore("walls", { keyPath: "id" }).createIndex("project_id", "project_id");
+        db.createObjectStore("files"); // id → Blob (photos, thumbnails, PDF reports)
+      }
+      if (e.oldVersion < 2) db.createObjectStore("meta"); // settings, e.g. the materials catalog
     };
     r.onsuccess = () => res(r.result);
     r.onerror = () => rej(r.error);
@@ -64,7 +77,7 @@ const api = {
   saveWall: (d) => tx(["walls", "files"], "readwrite", async (s) => {
     const wall = (d.id && (await req(s.walls.get(d.id)))) ||
       { id: uid(), project_id: d.project_id, created_at: nowIso(), photo_id: null, thumb_id: null };
-    Object.assign(wall, { name: d.name, width_cm: d.width_cm, height_cm: d.height_cm, materials: d.materials, notes: d.notes });
+    Object.assign(wall, { name: d.name, room: d.room, width_cm: d.width_cm, height_cm: d.height_cm, materials: d.materials, notes: d.notes });
     if (d.photo) {
       if (wall.photo_id) { s.files.delete(wall.photo_id); s.files.delete(wall.thumb_id); }
       wall.photo_id = uid();
@@ -111,6 +124,17 @@ const api = {
   }),
 
   getFile: (id) => tx("files", "readonly", (s) => req(s.files.get(id))),
+
+  async getCatalog() {
+    const saved = await tx("meta", "readonly", (s) => req(s.meta.get("materials")));
+    if (saved) return saved;
+    // first run: defaults + materials typed in older versions of the app
+    let legacy = [];
+    try { legacy = JSON.parse(localStorage.getItem("customMaterials") || "[]"); } catch { /* storage unavailable */ }
+    return [...DEFAULT_CATALOG, ...legacy.filter((n) => !DEFAULT_CATALOG.some((c) => c.name === n)).map((name) => ({ name, sheet_w: null, sheet_h: null, waste: 0 }))];
+  },
+
+  saveCatalog: (list) => tx("meta", "readwrite", (s) => req(s.meta.put(list, "materials"))),
 };
 
 // object URLs for stored photos, cached for the session
@@ -184,15 +208,6 @@ function fail(err) {
   toast("حدث خطأ: " + (err?.message || err), 4000);
 }
 
-function customMaterials() {
-  try { return JSON.parse(localStorage.getItem("customMaterials") || "[]"); } catch { return []; }
-}
-function saveCustomMaterial(m) {
-  try {
-    const list = customMaterials();
-    if (!list.includes(m)) localStorage.setItem("customMaterials", JSON.stringify([...list, m]));
-  } catch { /* storage unavailable */ }
-}
 
 // Resize + compress camera photos (phones produce 4–8 MB images)
 function compressImage(file, max = MAX_IMG, quality = 0.85) {
@@ -226,6 +241,30 @@ function materialTotals(walls) {
   return Object.entries(totals).sort((a, b) => b[1] - a[1]);
 }
 
+const sheetArea = (c) => (c?.sheet_w && c?.sheet_h ? (c.sheet_w * c.sheet_h) / 10000 : 0);
+
+// per material: net m², waste, gross m² and sheet count (project level, so offcuts are shared)
+function quantities(walls, catalog) {
+  return materialTotals(walls).map(([name, area]) => {
+    const c = catalog.find((x) => x.name === name);
+    const waste = Number(c?.waste) || 0;
+    const gross = area * (1 + waste / 100);
+    const sa = sheetArea(c);
+    return { name, area, waste, gross, sheets: sa ? Math.ceil(gross / sa - 1e-9) : null, size: sa ? `${c.sheet_w}×${c.sheet_h}` : null };
+  });
+}
+
+// rooms in order of first appearance; walls inside a room keep creation order
+function groupByRoom(walls) {
+  const groups = new Map();
+  for (const w of walls) {
+    const r = w.room || NO_ROOM;
+    if (!groups.has(r)) groups.set(r, []);
+    groups.get(r).push(w);
+  }
+  return [...groups].map(([room, ws]) => ({ room, walls: ws, area: ws.reduce((t, w) => t + areaM2(w), 0) }));
+}
+
 const statusPill = (p) => p.status === "closed"
   ? `<span class="pill pill-closed">مقفل</span>`
   : `<span class="pill pill-open">قيد الرفع</span>`;
@@ -237,6 +276,7 @@ async function route() {
   try {
     if (parts[0] === "new") return renderNewProject();
     if (parts[0] === "settings") return await renderSettings();
+    if (parts[0] === "materials") return await renderMaterials();
     if (parts[0] === "p" && parts[1] && parts[2] === "wall") return await renderWallForm(parts[1], parts[3] === "new" ? null : parts[3]);
     if (parts[0] === "p" && parts[1]) return await renderProject(parts[1]);
     return await renderProjects();
@@ -347,12 +387,14 @@ function renderNewProject() {
 const loadProject = (id) => api.getProject(id);
 
 async function renderProject(id) {
-  const { project: p, walls } = await loadProject(id);
+  const [{ project: p, walls }, catalog] = await Promise.all([loadProject(id), api.getCatalog()]);
   const urls = await images(walls.map((w) => w.thumb_id));
   const total = walls.reduce((s, w) => s + areaM2(w), 0);
   const closed = p.status === "closed";
-  const mats = materialTotals(walls);
-  const maxMat = mats[0]?.[1] || 1;
+  const qty = quantities(walls, catalog);
+  const maxMat = Math.max(1, ...qty.map((q) => q.area));
+  const rooms = groupByRoom(walls);
+  const ordered = rooms.flatMap((g) => g.walls);
   // loaded up front so the share button runs inside the tap (iOS requires a direct user gesture)
   const pdfBlob = closed && p.pdf_id ? await api.getFile(p.pdf_id) : null;
 
@@ -369,24 +411,34 @@ async function renderProject(id) {
       <div class="kpis">
         <div class="kpi"><div class="v">${walls.length}</div><div class="l">جدار</div></div>
         <div class="kpi"><div class="v num">${num(total)}<small>m²</small></div><div class="l">إجمالي المساحة</div></div>
-        <div class="kpi"><div class="v">${mats.length}</div><div class="l">مواد</div></div>
+        <div class="kpi"><div class="v">${rooms.length}</div><div class="l">غرف</div></div>
       </div>
     </header>
 
-    ${mats.length ? `
+    ${qty.length ? `
     <section class="section">
-      <div class="section-title"><h2>الكميات حسب المادة</h2></div>
+      <div class="section-title"><h2>الكميات المطلوبة</h2><a class="count" href="#/materials">مقاسات الألواح</a></div>
       <div class="card mats">
-        ${mats.map(([m, a]) => `<div class="mat"><div class="row"><span>${esc(m)}</span><b class="num">${num(a)} m²</b></div><div class="bar"><i style="width:${(a / maxMat) * 100}%"></i></div></div>`).join("")}
+        ${qty.map((q) => `
+          <div class="mat">
+            <div class="row">
+              <span>${esc(q.name)}</span>
+              ${q.sheets != null ? `<b class="sheets"><span class="num">${q.sheets}</span> لوح</b>` : `<b class="num">${num(q.gross)} m²</b>`}
+            </div>
+            <div class="bar"><i style="width:${(q.area / maxMat) * 100}%"></i></div>
+            <div class="mat-meta"><span class="num">${num(q.area)} m²</span>${q.waste ? ` + هدر ${q.waste}% = <span class="num">${num(q.gross)} m²</span>` : ""}${q.size ? ` · لوح <span class="num">${q.size}</span>` : ""}</div>
+          </div>`).join("")}
       </div>
     </section>` : ""}
 
     <section class="section">
-      <div class="section-title"><h2>الجدران</h2><span class="count">${walls.length} جدار</span></div>
-      ${walls.length ? `<div class="wlist">
-        ${walls.map((w, i) => `
+      <div class="section-title"><h2>الجدران حسب الغرفة</h2><span class="count">${walls.length} جدار</span></div>
+      ${walls.length ? rooms.map((g) => `
+        <div class="room-head"><b>${esc(g.room)}</b><span>${g.walls.length} جدار · <span class="num">${num(g.area)} m²</span></span></div>
+        <div class="wlist">
+        ${g.walls.map((w) => `
           <a class="card wcard" href="#/p/${p.id}/wall/${w.id}">
-            <div class="photo">${urls[w.thumb_id] ? `<img src="${urls[w.thumb_id]}" alt="">` : ic("camera")}<span class="code">${code(i)}</span></div>
+            <div class="photo">${urls[w.thumb_id] ? `<img src="${urls[w.thumb_id]}" alt="">` : ic("camera")}<span class="code">${code(ordered.indexOf(w))}</span></div>
             <div class="body">
               <div class="name">${esc(w.name)}</div>
               <div class="dims num" style="text-align:right">${dims(w)} <small>cm</small></div>
@@ -394,7 +446,7 @@ async function renderProject(id) {
             </div>
             <div class="area"><b class="num">${num(areaM2(w))}</b><span>m²</span></div>
           </a>`).join("")}
-      </div>` : `<div class="card empty"><div class="em-ico">${ic("camera")}</div><b>لا توجد جدران بعد</b>اضغط «إضافة جدار» وابدأ التصوير</div>`}
+        </div>`).join("") : `<div class="card empty"><div class="em-ico">${ic("camera")}</div><b>لا توجد جدران بعد</b>اضغط «إضافة جدار» وابدأ التصوير</div>`}
     </section>
 
     <div class="footer-actions">
@@ -410,8 +462,8 @@ async function renderProject(id) {
 
   const on = (sel, fn) => { const el = document.getElementById(sel); if (el) el.onclick = fn; };
   on("add", () => go(`#/p/${p.id}/wall/new`));
-  on("close", () => { if (confirm("إقفال المشروع وإصدار التقرير PDF؟")) closeProject(p, walls); });
-  on("regen", () => { if (confirm("إعادة إصدار التقرير؟")) closeProject(p, walls); });
+  on("close", () => { if (confirm("إقفال المشروع وإصدار التقرير PDF؟")) closeProject(p, walls, catalog); });
+  on("regen", () => { if (confirm("إعادة إصدار التقرير؟")) closeProject(p, walls, catalog); });
   on("share", () => (pdfBlob ? shareFile(pdfBlob, pdfName(p)) : toast("لا يوجد تقرير محفوظ — اضغط إعادة الإصدار")));
   on("pdf", () => (pdfBlob ? saveBlob(pdfBlob, pdfName(p)) : toast("لا يوجد تقرير محفوظ — اضغط إعادة الإصدار")));
   on("reopen", async () => {
@@ -431,13 +483,17 @@ async function deleteProject(p) {
 
 /* ---------- wall form ---------- */
 async function renderWallForm(projectId, wallId) {
-  const { project, walls } = await loadProject(projectId);
+  const [{ project, walls }, catalog] = await Promise.all([loadProject(projectId), api.getCatalog()]);
   const wall = wallId ? walls.find((w) => w.id === wallId) : null;
   if (wallId && !wall) return go(`#/p/${projectId}`);
-  const idx = wall ? walls.indexOf(wall) : walls.length;
+  const ordered = groupByRoom(walls).flatMap((g) => g.walls);
+  const idx = wall ? ordered.indexOf(wall) : walls.length;
   const urls = wall?.photo_id ? await images([wall.photo_id]) : {};
   const selected = new Set(wall?.materials || []);
-  const options = [...new Set([...DEFAULT_MATERIALS, ...customMaterials(), ...selected])];
+  const options = [...new Set([...catalog.map((c) => c.name), ...selected])];
+  // a new wall starts in the room of the last wall you saved, so a room is measured in one go
+  let room = wall ? wall.room || null : walls.at(-1)?.room || null;
+  const roomOptions = [...new Set([...walls.map((w) => w.room).filter(Boolean), ...DEFAULT_ROOMS, ...(room ? [room] : [])])];
   const photoUrl = urls[wall?.photo_id];
   let photo = null, thumb = null;
 
@@ -458,6 +514,12 @@ async function renderWallForm(projectId, wallId) {
       <div style="display:flex;align-items:center;gap:10px">
         <span class="code" style="background:var(--navy);color:#fff;border-radius:8px;padding:4px 9px">${code(idx)}</span>
         <input class="input" type="text" name="name" value="${esc(wall?.name || `جدار ${idx + 1}`)}" style="font-weight:600">
+      </div>
+      <div class="field"><span>الغرفة</span>
+        <div class="chips" id="rooms">
+          ${roomOptions.map((r) => `<button type="button" class="chip chip-room" aria-pressed="${r === room}" data-r="${esc(r)}">${esc(r)}</button>`).join("")}
+        </div>
+        <div class="chip-add"><input class="input" type="text" id="newroom" placeholder="غرفة أخرى…"><button type="button" class="btn btn-soft" id="addroom">${ic("plus", "ico-sm")} إضافة</button></div>
       </div>
       <div class="measure">
         <div class="mbox"><label for="w">العرض</label><div class="in"><input id="w" name="width" type="number" inputmode="decimal" step="any" min="0" placeholder="0" value="${wall?.width_cm ?? ""}"><span class="u">cm</span></div></div>
@@ -512,6 +574,26 @@ async function renderWallForm(projectId, wallId) {
   cap.querySelector(".topbar").onclick = (e) => { if (e.target.closest(".icon-btn")) e.stopPropagation(); else e.preventDefault(); };
   if (!wall) setTimeout(() => cam.click(), 300);
 
+  const roomsEl = document.getElementById("rooms");
+  const pickRoom = (r) => {
+    room = room === r ? null : r;
+    roomsEl.querySelectorAll(".chip").forEach((c) => c.setAttribute("aria-pressed", c.dataset.r === room));
+  };
+  roomsEl.onclick = (e) => { const c = e.target.closest(".chip"); if (c) pickRoom(c.dataset.r); };
+  const addRoom = () => {
+    const inp = document.getElementById("newroom");
+    const r = inp.value.trim();
+    if (!r) return;
+    if (!roomsEl.querySelector(`[data-r="${CSS.escape(r)}"]`)) {
+      roomsEl.insertAdjacentHTML("beforeend", `<button type="button" class="chip chip-room" aria-pressed="false" data-r="${esc(r)}">${esc(r)}</button>`);
+    }
+    room = null;
+    pickRoom(r);
+    inp.value = "";
+  };
+  document.getElementById("addroom").onclick = addRoom;
+  document.getElementById("newroom").onkeydown = (e) => { if (e.key === "Enter") { e.preventDefault(); addRoom(); } };
+
   const chips = document.getElementById("chips");
   chips.onclick = (e) => {
     const c = e.target.closest(".chip");
@@ -520,11 +602,15 @@ async function renderWallForm(projectId, wallId) {
     c.setAttribute("aria-pressed", on);
     on ? selected.add(c.dataset.m) : selected.delete(c.dataset.m);
   };
-  const addMat = () => {
+  const addMat = async () => {
     const inp = document.getElementById("newmat");
     const m = inp.value.trim();
     if (!m) return;
-    saveCustomMaterial(m);
+    if (!catalog.some((c) => c.name === m)) {
+      catalog.push({ name: m, sheet_w: null, sheet_h: null, waste: 0 });
+      await api.saveCatalog(catalog);
+      toast("أضيفت المادة — حدّد مقاس لوحها من ⚙️ مقاسات الألواح");
+    }
     selected.add(m);
     const existing = chips.querySelector(`[data-m="${CSS.escape(m)}"]`);
     if (existing) existing.setAttribute("aria-pressed", "true");
@@ -549,6 +635,7 @@ async function renderWallForm(projectId, wallId) {
         id: wall?.id || null,
         project_id: projectId,
         name: form.name.value.trim() || `جدار ${idx + 1}`,
+        room,
         width_cm: parseFloat(form.width.value) || null,
         height_cm: parseFloat(form.height.value) || null,
         materials: [...selected],
@@ -570,7 +657,7 @@ async function renderWallForm(projectId, wallId) {
 /* ---------- PDF report ---------- */
 // Each A4 page is built as HTML and rasterised separately: keeps Arabic shaping
 // correct and stays under mobile canvas size limits for large projects.
-async function buildPdf(p, walls, onProgress) {
+async function buildPdf(p, walls, catalog, onProgress) {
   const stage = document.getElementById("pdf-stage");
   await Promise.all(["400", "500", "600", "700"].map((w) => document.fonts.load(`${w} 16px "Readex Pro"`, "عربي MH")));
 
@@ -584,17 +671,27 @@ async function buildPdf(p, walls, onProgress) {
   }
 
   const total = walls.reduce((s, w) => s + areaM2(w), 0);
-  const mats = materialTotals(walls);
+  const qty = quantities(walls, catalog);
+  const rooms = groupByRoom(walls);
+  const ordered = rooms.flatMap((g) => g.walls);
+  const codeOf = (w) => code(ordered.indexOf(w));
   const no = reportNo(p);
   const issued = dateAr(new Date());
 
-  // wall schedule rows are paginated so long projects never overflow a page
-  const firstRows = Math.max(4, 13 - mats.length);
-  const scheduleChunks = [walls.slice(0, firstRows)];
-  for (let i = firstRows; i < walls.length; i += 24) scheduleChunks.push(walls.slice(i, i + 24));
-  const wallPairs = [];
-  for (let i = 0; i < walls.length; i += 2) wallPairs.push(walls.slice(i, i + 2));
-  const pageCount = 1 + scheduleChunks.length + wallPairs.length;
+  // schedule = room header rows + wall rows, paginated so long projects never overflow a page
+  const ROWS_PER_PAGE = 22;
+  const schedRows = rooms.flatMap((g) => [{ g }, ...g.walls.map((w) => ({ w }))]);
+  const schedChunks = [];
+  for (let i = 0; i < schedRows.length; i += ROWS_PER_PAGE) schedChunks.push(schedRows.slice(i, i + ROWS_PER_PAGE));
+  // wall details: each room starts on its own page, two walls per page
+  const wallPages = rooms.flatMap((g) => {
+    const out = [];
+    for (let i = 0; i < g.walls.length; i += 2) out.push({ g, pair: g.walls.slice(i, i + 2), part: i / 2 });
+    return out;
+  });
+  // rooms summary moves off the summary page when there are many materials and rooms
+  const roomsOwnPage = qty.length + rooms.length > 13;
+  const pageCount = 2 + (roomsOwnPage ? 1 : 0) + schedChunks.length + wallPages.length;
 
   const head = () => `
     <div class="ph-head">
@@ -604,19 +701,9 @@ async function buildPdf(p, walls, onProgress) {
   const foot = (n) => `
     <div class="pg-foot"><span>${issued} · ${esc([p.client, p.location].filter(Boolean).join(" · "))}</span><span class="pn">${n} / ${pageCount}</span></div>
     <div class="pg-band"></div>`;
-  const page = (n, body) => `${head()}<div class="pg-body">${body}</div>${foot(n)}`;
-
-  const scheduleTable = (rows, offset, withTotal) => `
-    <table class="tbl">
-      <thead><tr><th>الرمز</th><th>الجدار</th><th>المواد</th><th class="c-num">العرض × الارتفاع (cm)</th><th class="c-num">المساحة m²</th></tr></thead>
-      <tbody>${rows.map((w, i) => `<tr>
-        <td class="c-code">${code(offset + i)}</td><td>${esc(w.name)}</td>
-        <td>${esc((w.materials || []).join(" + ") || "—")}</td>
-        <td class="c-num">${dims(w)}</td><td class="c-num">${num(areaM2(w))}</td></tr>`).join("")}</tbody>
-      ${withTotal ? `<tfoot><tr><td colspan="4">الإجمالي</td><td class="c-num">${num(total)}</td></tr></tfoot>` : ""}
-    </table>`;
-
   const pages = [];
+  const addPage = (body) => pages.push(`${head()}<div class="pg-body">${body}</div>${foot(pages.length + 1)}`);
+  const sign = `<div class="sign"><div>أعدّه</div><div>اعتمده</div><div>التاريخ</div></div>`;
 
   // 1 — cover
   pages.push(`
@@ -636,51 +723,66 @@ async function buildPdf(p, walls, onProgress) {
         <div class="cv-item"><div class="k">الموقع</div><div class="v">${esc(p.location || "—")}</div></div>
         <div class="cv-item"><div class="k">رقم التقرير</div><div class="v num" style="text-align:right">${no}</div></div>
         <div class="cv-item"><div class="k">تاريخ الإصدار</div><div class="v">${issued}</div></div>
-        <div class="cv-item"><div class="k">عدد الجدران</div><div class="v">${walls.length}</div></div>
+        <div class="cv-item"><div class="k">الغرف / الجدران</div><div class="v">${rooms.length} غرف · ${walls.length} جدار</div></div>
         <div class="cv-item"><div class="k">إجمالي المساحة</div><div class="v num" style="text-align:right">${num(total)} m²</div></div>
       </div>
       <div class="cv-foot"><span><b>${COMPANY.ar}</b> · ${COMPANY.en}</span><span>وثيقة خاصة</span></div>
     </div>
     <div class="cv-band"></div>`);
 
-  // 2 — summary + schedule (continued on extra pages when long)
-  scheduleChunks.forEach((rows, ci) => {
-    const offset = ci === 0 ? 0 : firstRows + (ci - 1) * 24;
-    const last = ci === scheduleChunks.length - 1;
-    const body = ci === 0 ? `
-      <h3 class="h-sec">ملخص المشروع <small>SUMMARY</small></h3>
-      <div class="kp-row">
-        <div class="kp dark"><div class="k">إجمالي المساحة</div><div class="v num" style="text-align:right">${num(total)} <small>m²</small></div></div>
-        <div class="kp"><div class="k">عدد الجدران</div><div class="v">${walls.length}</div></div>
-        <div class="kp"><div class="k">أنواع المواد</div><div class="v">${mats.length}</div></div>
-      </div>
-      ${mats.length ? `
-      <h3 class="h-sec">الكميات حسب المادة <small>QUANTITIES</small></h3>
+  const roomsTable = `
+    <h3 class="h-sec">ملخص الغرف <small>ROOMS</small></h3>
+    <table class="tbl">
+      <thead><tr><th>الغرفة</th><th>الجدران</th><th>المواد</th><th class="c-num">المساحة m²</th></tr></thead>
+      <tbody>${rooms.map((g) => `<tr><td><b>${esc(g.room)}</b></td><td>${g.walls.map(codeOf).join("، ")}</td>
+        <td>${esc([...new Set(g.walls.flatMap((w) => w.materials || []))].join(" + ") || "—")}</td><td class="c-num">${num(g.area)}</td></tr>`).join("")}</tbody>
+      <tfoot><tr><td colspan="3">الإجمالي</td><td class="c-num">${num(total)}</td></tr></tfoot>
+    </table>`;
+
+  // 2 — summary: quantities to order + rooms
+  addPage(`
+    <h3 class="h-sec">ملخص المشروع <small>SUMMARY</small></h3>
+    <div class="kp-row">
+      <div class="kp dark"><div class="k">إجمالي المساحة</div><div class="v num" style="text-align:right">${num(total)} <small>m²</small></div></div>
+      <div class="kp"><div class="k">الغرف</div><div class="v">${rooms.length}</div></div>
+      <div class="kp"><div class="k">الجدران</div><div class="v">${walls.length}</div></div>
+    </div>
+    ${qty.length ? `
+    <h3 class="h-sec">الكميات المطلوبة للتوريد <small>QUANTITIES</small></h3>
+    <table class="tbl qty">
+      <thead><tr><th>المادة</th><th class="c-num">الصافي m²</th><th class="c-num">الهدر</th><th class="c-num">مع الهدر m²</th><th class="c-num">مقاس اللوح</th><th class="c-num">الكمية</th></tr></thead>
+      <tbody>${qty.map((q) => `<tr><td><b>${esc(q.name)}</b></td><td class="c-num">${num(q.area)}</td><td class="c-num">${q.waste}%</td>
+        <td class="c-num">${num(q.gross)}</td><td class="c-num">${q.size || "—"}</td>
+        <td class="c-num q-cell">${q.sheets != null ? `${q.sheets} لوح` : `${num(q.gross)} m²`}</td></tr>`).join("")}</tbody>
+    </table>` : ""}
+    ${roomsOwnPage ? "" : roomsTable}
+    ${sign}`);
+  if (roomsOwnPage) addPage(roomsTable);
+
+  // 3 — wall schedule grouped by room
+  schedChunks.forEach((rows, ci) => {
+    const last = ci === schedChunks.length - 1;
+    addPage(`
+      <h3 class="h-sec">جدول الجدران${ci ? " (تابع)" : ""} <small>SCHEDULE</small></h3>
       <table class="tbl">
-        <thead><tr><th>المادة</th><th class="c-num">المساحة m²</th><th style="width:40%">النسبة من الإجمالي</th></tr></thead>
-        <tbody>${mats.map(([m, a]) => {
-          const pct = total ? Math.round((a / total) * 100) : 0;
-          return `<tr><td><b>${esc(m)}</b></td><td class="c-num">${num(a)}</td><td><div class="share"><span>${pct}%</span><div class="b"><i style="width:${pct}%"></i></div></div></td></tr>`;
-        }).join("")}</tbody>
-      </table>` : ""}
-      <h3 class="h-sec">جدول الجدران <small>SCHEDULE</small></h3>
-      ${scheduleTable(rows, 0, last)}
-      ${last ? `<div class="sign"><div>أعدّه</div><div>اعتمده</div><div>التاريخ</div></div>` : ""}`
-      : `<h3 class="h-sec">جدول الجدران (تابع) <small>SCHEDULE</small></h3>${scheduleTable(rows, offset, last)}
-         ${last ? `<div class="sign"><div>أعدّه</div><div>اعتمده</div><div>التاريخ</div></div>` : ""}`;
-    pages.push(page(pages.length + 1, body));
+        <thead><tr><th>الرمز</th><th>الجدار</th><th>المواد</th><th class="c-num">العرض × الارتفاع (cm)</th><th class="c-num">المساحة m²</th></tr></thead>
+        <tbody>${rows.map((r) => r.g
+          ? `<tr class="room-row"><td colspan="4">${esc(r.g.room)} <span>· ${r.g.walls.length} جدار</span></td><td class="c-num">${num(r.g.area)}</td></tr>`
+          : `<tr><td class="c-code">${codeOf(r.w)}</td><td>${esc(r.w.name)}</td><td>${esc((r.w.materials || []).join(" + ") || "—")}</td>
+             <td class="c-num">${dims(r.w)}</td><td class="c-num">${num(areaM2(r.w))}</td></tr>`).join("")}</tbody>
+        ${last ? `<tfoot><tr><td colspan="4">الإجمالي</td><td class="c-num">${num(total)}</td></tr></tfoot>` : ""}
+      </table>`);
   });
 
-  // 3 — wall detail pages, two walls per page
+  // 4 — wall details, by room
   const BOX_W = 430, BOX_H = 330;
-  wallPairs.forEach((pair) => {
-    const body = `<h3 class="h-sec">تفاصيل الجدران <small>WALL DETAILS</small></h3>` + pair.map((w) => {
-      const i = walls.indexOf(w);
+  wallPages.forEach(({ g, pair, part }) => {
+    const body = `<h3 class="h-sec">${esc(g.room)}${part ? " (تابع)" : ""} <small>${g.walls.length} جدار · ${num(g.area)} m²</small></h3>` + pair.map((w) => {
       const ph = photos[w.id];
       let photo = `<span class="none">لا توجد صورة</span>`;
       if (ph) {
-        const s = Math.min(BOX_W / ph.w, BOX_H / ph.h);
-        const W = Math.round(ph.w * s), H = Math.round(ph.h * s);
+        const sc = Math.min(BOX_W / ph.w, BOX_H / ph.h);
+        const W = Math.round(ph.w * sc), H = Math.round(ph.h * sc);
         photo = `<div class="wb-photo" style="width:${W}px;height:${H}px">
           <img src="${ph.src}" width="${W}" height="${H}" alt="">
           ${w.width_cm ? `<div class="pdim pw"><span class="lab" style="left:50%;top:-12px;transform:translateX(-50%)">${num(w.width_cm)} cm</span></div>` : ""}
@@ -689,11 +791,12 @@ async function buildPdf(p, walls, onProgress) {
       }
       return `
         <div class="wb">
-          <div class="wb-head"><span class="wb-code">${code(i)}</span><span class="wb-name">${esc(w.name)}</span><span class="wb-area">${num(areaM2(w))} m²</span></div>
+          <div class="wb-head"><span class="wb-code">${codeOf(w)}</span><span class="wb-name">${esc(w.name)}</span><span class="wb-area">${num(areaM2(w))} m²</span></div>
           <div class="wb-main">
             <div class="wb-frame">${photo}</div>
             <div class="wb-side">
               <div class="spec">
+                <div><span>الغرفة</span><b style="direction:rtl">${esc(g.room)}</b></div>
                 <div><span>العرض</span><b>${w.width_cm ? num(w.width_cm) + " cm" : "—"}</b></div>
                 <div><span>الارتفاع</span><b>${w.height_cm ? num(w.height_cm) + " cm" : "—"}</b></div>
                 <div><span>المساحة</span><b>${num(areaM2(w))} m²</b></div>
@@ -704,7 +807,7 @@ async function buildPdf(p, walls, onProgress) {
           </div>
         </div>`;
     }).join("");
-    pages.push(page(pages.length + 1, body));
+    addPage(body);
   });
 
   const pdf = new jspdf.jsPDF({ unit: "mm", format: "a4", orientation: "portrait", compress: true });
@@ -745,10 +848,10 @@ async function shareFile(blob, name) {
   saveBlob(blob, name);
 }
 
-async function closeProject(p, walls) {
+async function closeProject(p, walls, catalog) {
   const b = busy("جاري إصدار التقرير…");
   try {
-    const blob = await buildPdf(p, walls, b.set);
+    const blob = await buildPdf(p, walls, catalog, b.set);
     await api.saveReport(p.id, blob);
     toast("تم إقفال المشروع وحفظ التقرير ✓");
     route();
@@ -781,6 +884,8 @@ async function renderSettings() {
         <span style="color:inherit">${persisted ? "البيانات محمية من الحذف التلقائي" : "الحماية من الحذف التلقائي غير مفعّلة"}</span>${ic(persisted ? "shield" : "lock")}
       </div>
       ${persisted ? "" : `<button class="btn btn-soft" id="persist">${ic("shield")} تفعيل الحماية</button>`}
+
+      <a class="btn" href="#/materials" style="justify-content:space-between">${ic("ruler")} المواد ومقاسات الألواح ${ic("chev", "ico-sm")}</a>
 
       <div class="field"><span>نسخة احتياطية</span>
         <button class="btn btn-primary" id="export">${ic("download")} تجهيز نسخة احتياطية</button>
@@ -825,6 +930,55 @@ async function renderSettings() {
   };
 }
 
+/* ---------- materials catalog: sheet sizes + waste ---------- */
+async function renderMaterials() {
+  const catalog = await api.getCatalog();
+  const row = (c) => `
+    <div class="card matrow">
+      <div class="matrow-top">
+        <input class="input" name="name" value="${esc(c.name)}" placeholder="اسم المادة" required>
+        <button type="button" class="icon-btn del" aria-label="حذف">${ic("trash")}</button>
+      </div>
+      <div class="matrow-grid">
+        <label><span>عرض اللوح</span><div class="in"><input name="w" type="number" inputmode="decimal" step="any" min="0" value="${c.sheet_w ?? ""}" placeholder="—"><i>cm</i></div></label>
+        <label><span>طول اللوح</span><div class="in"><input name="h" type="number" inputmode="decimal" step="any" min="0" value="${c.sheet_h ?? ""}" placeholder="—"><i>cm</i></div></label>
+        <label><span>الهدر</span><div class="in"><input name="waste" type="number" inputmode="decimal" step="any" min="0" value="${c.waste ?? 0}"><i>%</i></div></label>
+      </div>
+    </div>`;
+
+  view.innerHTML = `
+    <header class="hero" style="padding-bottom:40px">
+      <div class="hero-bar"><a class="icon-btn" href="#/settings" aria-label="رجوع">${ic("back")}</a><img src="${A.markWhite}" alt="" style="width:30px"></div>
+      <div class="eyebrow">المواد</div>
+      <h1>مقاسات الألواح والهدر</h1>
+      <div class="sub">التطبيق يحسب عدد الألواح من المساحة + نسبة الهدر. اترك المقاس فاضي للمواد اللي تنحسب بالمتر (مثل الدهان).</div>
+    </header>
+    <form class="sheet form" id="f">
+      <div id="list" class="wlist">${catalog.map(row).join("")}</div>
+      <button type="button" class="btn btn-soft" id="add">${ic("plus")} إضافة مادة</button>
+      <div class="actionbar"><div class="inner"><button class="btn btn-primary">${ic("check")} حفظ</button></div></div>
+    </form>`;
+
+  const list = document.getElementById("list");
+  list.onclick = (e) => { if (e.target.closest(".del")) e.target.closest(".matrow").remove(); };
+  document.getElementById("add").onclick = () => {
+    list.insertAdjacentHTML("beforeend", row({ name: "", sheet_w: null, sheet_h: null, waste: 10 }));
+    list.lastElementChild.querySelector("input").focus();
+  };
+  document.getElementById("f").onsubmit = async (e) => {
+    e.preventDefault();
+    const items = [...list.querySelectorAll(".matrow")].map((r) => {
+      const v = (n) => r.querySelector(`[name=${n}]`).value.trim();
+      return { name: v("name"), sheet_w: parseFloat(v("w")) || null, sheet_h: parseFloat(v("h")) || null, waste: parseFloat(v("waste")) || 0 };
+    }).filter((c) => c.name);
+    try {
+      await api.saveCatalog(items);
+      toast("تم حفظ المواد ✓");
+      history.back();
+    } catch (err) { fail(err); }
+  };
+}
+
 const blobToDataUrl = (blob) => new Promise((res, rej) => {
   const r = new FileReader();
   r.onload = () => res(r.result);
@@ -840,7 +994,7 @@ async function exportBackup() {
   });
   const files = {};
   for (const [i, k] of keys.entries()) files[k] = await blobToDataUrl(blobs[i]);
-  const data = { app: "hectar-measure", version: 1, exported_at: nowIso(), projects, walls, files };
+  const data = { app: "hectar-measure", version: 2, exported_at: nowIso(), projects, walls, files, materials: await api.getCatalog() };
   return new Blob([JSON.stringify(data)], { type: "application/json" });
 }
 
@@ -853,6 +1007,11 @@ async function importBackup(file) {
     data.walls.forEach((w) => s.walls.put(w));
     files.forEach(([k, blob]) => s.files.put(blob, k));
   });
+  if (data.materials) {
+    const current = await api.getCatalog();
+    const merged = [...current.filter((c) => !data.materials.some((m) => m.name === c.name)), ...data.materials];
+    await api.saveCatalog(merged);
+  }
   return data.projects.length;
 }
 
