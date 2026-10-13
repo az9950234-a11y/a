@@ -392,3 +392,5 @@ textarea.input { min-height: 88px; resize: vertical; }
 .tbl .room-row td span { font-weight: 400; color: #b07a35; }
 .tbl.qty td, .tbl.qty th { padding: 9px 9px; }
 .tbl td.q-cell { background: #fbf1e3 !important; color: #9a5c0b; font-weight: 700; font-size: 14px; }
+.sheet-live { display: flex; flex-wrap: wrap; gap: 6px 14px; background: var(--copper-soft); color: var(--copper); border-radius: 12px; padding: 10px 14px; font-size: 13.5px; margin-top: -4px; }
+.sheet-live b { font-size: 16px; }

@@ -2,10 +2,10 @@
 
 // sheet sizes in cm; materials without a size are counted in m² only
 const DEFAULT_CATALOG = [
-  { name: "بديل خشب", sheet_w: 122, sheet_h: 280, waste: 10 },
-  { name: "بديل رخام", sheet_w: 122, sheet_h: 280, waste: 10 },
-  { name: "بديل شيبورد", sheet_w: 122, sheet_h: 244, waste: 10 },
-  { name: "جبس بورد", sheet_w: 120, sheet_h: 240, waste: 10 },
+  { name: "بديل خشب", sheet_w: 120, sheet_h: 280, waste: 0 },
+  { name: "بديل رخام", sheet_w: 120, sheet_h: 280, waste: 0 },
+  { name: "بديل شيبورد", sheet_w: 120, sheet_h: 280, waste: 0 },
+  { name: "جبس بورد", sheet_w: 120, sheet_h: 240, waste: 0 },
   { name: "دهان", sheet_w: null, sheet_h: null, waste: 0 },
   { name: "ورق جدران", sheet_w: null, sheet_h: null, waste: 10 },
 ];
@@ -241,16 +241,27 @@ function materialTotals(walls) {
   return Object.entries(totals).sort((a, b) => b[1] - a[1]);
 }
 
-const sheetArea = (c) => (c?.sheet_w && c?.sheet_h ? (c.sheet_w * c.sheet_h) / 10000 : 0);
+// Sheets are counted per wall by width only: 360 cm wall ÷ 120 cm sheet = 3 sheets.
+function wallSheets(w, c) {
+  if (!c?.sheet_w) return null;
+  return w.width_cm ? Math.ceil(w.width_cm / c.sheet_w - 1e-9) : 0;
+}
 
-// per material: net m², waste, gross m² and sheet count (project level, so offcuts are shared)
+// per material: total sheets (sum of walls) or m² + waste for materials without a sheet size
 function quantities(walls, catalog) {
   return materialTotals(walls).map(([name, area]) => {
     const c = catalog.find((x) => x.name === name);
+    const own = walls.filter((w) => (w.materials || []).includes(name));
+    const bySheet = !!c?.sheet_w;
     const waste = Number(c?.waste) || 0;
-    const gross = area * (1 + waste / 100);
-    const sa = sheetArea(c);
-    return { name, area, waste, gross, sheets: sa ? Math.ceil(gross / sa - 1e-9) : null, size: sa ? `${c.sheet_w}×${c.sheet_h}` : null };
+    return {
+      name, area, waste,
+      gross: area * (1 + waste / 100),
+      walls: own.length,
+      width: own.reduce((t, w) => t + (Number(w.width_cm) || 0), 0),
+      sheets: bySheet ? own.reduce((t, w) => t + wallSheets(w, c), 0) : null,
+      size: bySheet ? `${c.sheet_w}×${c.sheet_h || "—"}` : null,
+    };
   });
 }
 
@@ -426,7 +437,9 @@ async function renderProject(id) {
               ${q.sheets != null ? `<b class="sheets"><span class="num">${q.sheets}</span> لوح</b>` : `<b class="num">${num(q.gross)} m²</b>`}
             </div>
             <div class="bar"><i style="width:${(q.area / maxMat) * 100}%"></i></div>
-            <div class="mat-meta"><span class="num">${num(q.area)} m²</span>${q.waste ? ` + هدر ${q.waste}% = <span class="num">${num(q.gross)} m²</span>` : ""}${q.size ? ` · لوح <span class="num">${q.size}</span>` : ""}</div>
+            <div class="mat-meta">${q.sheets != null
+              ? `${q.walls} جدار · مجموع العرض <span class="num">${num(q.width)} cm</span> · لوح <span class="num">${q.size}</span>`
+              : `<span class="num">${num(q.area)} m²</span>${q.waste ? ` + هدر ${q.waste}% = <span class="num">${num(q.gross)} m²</span>` : ""}`}</div>
           </div>`).join("")}
       </div>
     </section>` : ""}
@@ -442,7 +455,7 @@ async function renderProject(id) {
             <div class="body">
               <div class="name">${esc(w.name)}</div>
               <div class="dims num" style="text-align:right">${dims(w)} <small>cm</small></div>
-              ${w.materials?.length ? `<div class="tags">${w.materials.map((m) => `<span class="tag">${esc(m)}</span>`).join("")}</div>` : ""}
+              ${w.materials?.length ? `<div class="tags">${w.materials.map((m) => { const n = wallSheets(w, catalog.find((c) => c.name === m)); return `<span class="tag">${esc(m)}${n ? ` · ${n} لوح` : ""}</span>`; }).join("")}</div>` : ""}
             </div>
             <div class="area"><b class="num">${num(areaM2(w))}</b><span>m²</span></div>
           </a>`).join("")}
@@ -526,6 +539,7 @@ async function renderWallForm(projectId, wallId) {
         <div class="mbox"><label for="h">الارتفاع</label><div class="in"><input id="h" name="height" type="number" inputmode="decimal" step="any" min="0" placeholder="0" value="${wall?.height_cm ?? ""}"><span class="u">cm</span></div></div>
       </div>
       <div class="area-chip"><span>المساحة</span><b class="num" id="area">0 m²</b></div>
+      <div class="sheet-live" id="sheetlive" hidden></div>
       <div class="field"><span>المواد المطلوبة</span>
         <div class="chips" id="chips">
           ${options.map((m) => `<button type="button" class="chip" aria-pressed="${selected.has(m)}" data-m="${esc(m)}">${esc(m)}</button>`).join("")}
@@ -554,6 +568,10 @@ async function renderWallForm(projectId, wallId) {
     dh.hidden = !(hasPhoto && h > 0);
     dw.querySelector(".lab").textContent = `${num(w)} cm`;
     dh.querySelector(".lab").textContent = `${num(h)} cm`;
+    const counts = [...selected].map((m) => [m, wallSheets({ width_cm: w, height_cm: h }, catalog.find((c) => c.name === m))]).filter(([, n]) => n);
+    const live = document.getElementById("sheetlive");
+    live.hidden = !counts.length;
+    live.innerHTML = counts.map(([m, n]) => `<span>${esc(m)}: <b class="num">${n}</b> لوح</span>`).join("");
   };
   form.width.oninput = form.height.oninput = update;
   update();
@@ -601,6 +619,7 @@ async function renderWallForm(projectId, wallId) {
     const on = c.getAttribute("aria-pressed") !== "true";
     c.setAttribute("aria-pressed", on);
     on ? selected.add(c.dataset.m) : selected.delete(c.dataset.m);
+    update();
   };
   const addMat = async () => {
     const inp = document.getElementById("newmat");
@@ -612,6 +631,7 @@ async function renderWallForm(projectId, wallId) {
       toast("أضيفت المادة — حدّد مقاس لوحها من ⚙️ مقاسات الألواح");
     }
     selected.add(m);
+    update();
     const existing = chips.querySelector(`[data-m="${CSS.escape(m)}"]`);
     if (existing) existing.setAttribute("aria-pressed", "true");
     else chips.insertAdjacentHTML("beforeend", `<button type="button" class="chip" aria-pressed="true" data-m="${esc(m)}">${esc(m)}</button>`);
@@ -750,10 +770,10 @@ async function buildPdf(p, walls, catalog, onProgress) {
     ${qty.length ? `
     <h3 class="h-sec">الكميات المطلوبة للتوريد <small>QUANTITIES</small></h3>
     <table class="tbl qty">
-      <thead><tr><th>المادة</th><th class="c-num">الصافي m²</th><th class="c-num">الهدر</th><th class="c-num">مع الهدر m²</th><th class="c-num">مقاس اللوح</th><th class="c-num">الكمية</th></tr></thead>
-      <tbody>${qty.map((q) => `<tr><td><b>${esc(q.name)}</b></td><td class="c-num">${num(q.area)}</td><td class="c-num">${q.waste}%</td>
-        <td class="c-num">${num(q.gross)}</td><td class="c-num">${q.size || "—"}</td>
-        <td class="c-num q-cell">${q.sheets != null ? `${q.sheets} لوح` : `${num(q.gross)} m²`}</td></tr>`).join("")}</tbody>
+      <thead><tr><th>المادة</th><th class="c-num">الجدران</th><th class="c-num">مجموع العرض cm</th><th class="c-num">المساحة m²</th><th class="c-num">مقاس اللوح</th><th class="c-num">الكمية</th></tr></thead>
+      <tbody>${qty.map((q) => `<tr><td><b>${esc(q.name)}</b></td><td class="c-num">${q.walls}</td><td class="c-num">${num(q.width)}</td>
+        <td class="c-num">${num(q.area)}</td><td class="c-num">${q.size || "—"}</td>
+        <td class="c-num q-cell">${q.sheets != null ? `${q.sheets} لوح` : `${num(q.gross)} m²${q.waste ? ` (+${q.waste}%)` : ""}`}</td></tr>`).join("")}</tbody>
     </table>` : ""}
     ${roomsOwnPage ? "" : roomsTable}
     ${sign}`);
@@ -801,7 +821,7 @@ async function buildPdf(p, walls, catalog, onProgress) {
                 <div><span>الارتفاع</span><b>${w.height_cm ? num(w.height_cm) + " cm" : "—"}</b></div>
                 <div><span>المساحة</span><b>${num(areaM2(w))} m²</b></div>
               </div>
-              ${w.materials?.length ? `<div><div class="wb-k">المواد</div><div class="mtags">${w.materials.map((m) => `<span>${esc(m)}</span>`).join("")}</div></div>` : ""}
+              ${w.materials?.length ? `<div><div class="wb-k">المواد</div><div class="mtags">${w.materials.map((m) => { const n = wallSheets(w, catalog.find((c) => c.name === m)); return `<span>${esc(m)}${n ? ` · ${n} لوح` : ""}</span>`; }).join("")}</div></div>` : ""}
               ${w.notes ? `<div><div class="wb-k">ملاحظات</div><div class="wb-notes">${esc(w.notes)}</div></div>` : ""}
             </div>
           </div>
@@ -942,7 +962,7 @@ async function renderMaterials() {
       <div class="matrow-grid">
         <label><span>عرض اللوح</span><div class="in"><input name="w" type="number" inputmode="decimal" step="any" min="0" value="${c.sheet_w ?? ""}" placeholder="—"><i>cm</i></div></label>
         <label><span>طول اللوح</span><div class="in"><input name="h" type="number" inputmode="decimal" step="any" min="0" value="${c.sheet_h ?? ""}" placeholder="—"><i>cm</i></div></label>
-        <label><span>الهدر</span><div class="in"><input name="waste" type="number" inputmode="decimal" step="any" min="0" value="${c.waste ?? 0}"><i>%</i></div></label>
+        <label><span>هدر (للمتر)</span><div class="in"><input name="waste" type="number" inputmode="decimal" step="any" min="0" value="${c.waste ?? 0}"><i>%</i></div></label>
       </div>
     </div>`;
 
@@ -951,7 +971,7 @@ async function renderMaterials() {
       <div class="hero-bar"><a class="icon-btn" href="#/settings" aria-label="رجوع">${ic("back")}</a><img src="${A.markWhite}" alt="" style="width:30px"></div>
       <div class="eyebrow">المواد</div>
       <h1>مقاسات الألواح والهدر</h1>
-      <div class="sub">التطبيق يحسب عدد الألواح من المساحة + نسبة الهدر. اترك المقاس فاضي للمواد اللي تنحسب بالمتر (مثل الدهان).</div>
+      <div class="sub">الألواح تنحسب بعرض الجدار ÷ عرض اللوح، مقرّبة للأعلى (360 ÷ 120 = 3 ألواح). اترك العرض فاضي للمواد اللي تنحسب بالمتر (مثل الدهان).</div>
     </header>
     <form class="sheet form" id="f">
       <div id="list" class="wlist">${catalog.map(row).join("")}</div>
