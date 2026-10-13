@@ -675,6 +675,56 @@ async function renderWallForm(projectId, wallId) {
 }
 
 /* ---------- PDF report ---------- */
+
+// html2canvas draws each text run at (text box top + its own baseline estimate). The estimate is
+// off by a few px on iPhone (≈1px on Chrome), which pushes text down inside badges. Measure the
+// real baseline in this browser for every font html2canvas uses, and shift fillText by the error.
+const baselineErrors = new Map();
+function baselineError(font) {
+  if (baselineErrors.has(font)) return baselineErrors.get(font);
+  const probe = document.createElement("div");
+  probe.style.font = font;
+  const { fontFamily, fontSize } = probe.style;
+  const host = document.createElement("div");
+  host.style.cssText = "position:absolute;left:-9999px;top:0;white-space:nowrap";
+  host.style.font = font;
+  const text = document.createTextNode("Hidden Text");
+  const mark = document.createElement("span");
+  mark.style.cssText = "display:inline-block;width:1px;height:0;vertical-align:baseline";
+  host.append(text, mark);
+  // same measurement html2canvas does (FontMetrics.parseMetrics)
+  const box = document.createElement("div");
+  box.style.cssText = "visibility:hidden;margin:0;padding:0;white-space:nowrap";
+  Object.assign(box.style, { fontFamily, fontSize });
+  const span = document.createElement("span");
+  Object.assign(span.style, { fontFamily, fontSize, margin: "0", padding: "0" });
+  span.textContent = "Hidden Text";
+  const img = document.createElement("img");
+  img.src = "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7";
+  img.width = img.height = 1;
+  img.style.cssText = "margin:0;padding:0;vertical-align:baseline";
+  box.append(span, img);
+  document.body.append(host, box);
+  const range = document.createRange();
+  range.setStart(text, 0);
+  range.setEnd(text, text.length);
+  const actual = mark.getBoundingClientRect().top - range.getBoundingClientRect().top;
+  const estimate = img.offsetTop - span.offsetTop + 2;
+  host.remove();
+  box.remove();
+  const err = Number.isFinite(estimate - actual) && Math.abs(estimate - actual) < 40 ? estimate - actual : 0;
+  baselineErrors.set(font, err);
+  return err;
+}
+
+async function withBaselineFix(render) {
+  const proto = CanvasRenderingContext2D.prototype;
+  const fillText = proto.fillText;
+  proto.fillText = function (text, x, y, ...rest) {
+    return fillText.call(this, text, x, this.textBaseline === "alphabetic" ? y - baselineError(this.font) : y, ...rest);
+  };
+  try { return await render(); } finally { proto.fillText = fillText; }
+}
 // Each A4 page is built as HTML and rasterised separately: keeps Arabic shaping
 // correct and stays under mobile canvas size limits for large projects.
 async function buildPdf(p, walls, catalog, onProgress) {
@@ -839,7 +889,7 @@ async function buildPdf(p, walls, catalog, onProgress) {
     el.innerHTML = html;
     stage.appendChild(el);
     await Promise.all([...el.querySelectorAll("img")].map((im) => (im.complete ? null : new Promise((r) => { im.onload = im.onerror = r; }))));
-    const canvas = await html2canvas(el, { scale: 2, backgroundColor: "#ffffff", logging: false, useCORS: true });
+    const canvas = await withBaselineFix(() => html2canvas(el, { scale: 2, backgroundColor: "#ffffff", logging: false, useCORS: true }));
     stage.removeChild(el);
     if (i > 0) pdf.addPage();
     pdf.addImage(canvas.toDataURL("image/jpeg", 0.9), "JPEG", 0, 0, 210, 297, undefined, "FAST");
