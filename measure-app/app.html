@@ -4,6 +4,8 @@
 const DEFAULT_MATERIALS = ["بديل خشب", "بديل رخام", "بديل شيبورد", "جبس بورد", "دهان", "ورق جدران"];
 const MAX_IMG = 1600;
 const THUMB_IMG = 480;
+// built from parts: Apps Script strips anything that looks like a block comment, even inside strings
+const IMAGE_ACCEPT = "image/" + "*";
 const COMPANY = { ar: "شركة هكتار الحديثة", en: "MODERN HECTAR COMPANY" };
 
 const view = document.getElementById("view");
@@ -338,7 +340,7 @@ async function renderWallForm(projectId, wallId) {
 
   view.innerHTML = `
     <label class="capture" id="cap">
-      <input type="file" accept="image/*" capture="environment" id="cam">
+      <input type="file" accept="${IMAGE_ACCEPT}" capture="environment" id="cam">
       <div class="topbar">
         <a class="icon-btn" href="#/p/${projectId}" aria-label="رجوع">${ic("back")}</a>
         ${wall ? `<button type="button" class="icon-btn" id="delw" aria-label="حذف">${ic("trash")}</button>` : ""}
