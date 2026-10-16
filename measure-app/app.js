@@ -203,6 +203,7 @@ const ICONS = {
   settings: '<circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M4.2 4.2l2.1 2.1M17.7 17.7l2.1 2.1M2 12h3M19 12h3M4.2 19.8l2.1-2.1M17.7 6.3l2.1-2.1"/>',
   share: '<path d="M12 3v12M7 8l5-5 5 5M5 13v7h14v-7"/>',
   upload: '<path d="M12 15V4M7 9l5-5 5 5M5 20h14"/>',
+  calc: '<rect x="5" y="3" width="14" height="18" rx="2.5"/><path d="M8.5 7h7M8.5 11h1M12 11h1M15.5 11h0M8.5 14.5h1M12 14.5h1M8.5 18h1M12 18h1M15.5 14.5v3.5"/>',
   ruler: '<path d="M3 17L17 3l4 4L7 21z"/><path d="M7 13l2 2M10 10l2 2M13 7l2 2"/>',
 };
 const ic = (n, cls = "") => `<svg class="ico ${cls}" viewBox="0 0 24 24" aria-hidden="true">${ICONS[n]}</svg>`;
@@ -318,6 +319,7 @@ async function route() {
     if (!parts.length) return await renderHub();
     if (parts[0] === "measure") return await renderProjects();
     if (parts[0] === "q") return await routeQuotes(parts.slice(1));
+    if (parts[0] === "calc") return await (parts[1] === "prices" ? renderCalcPrices() : renderCalc());
     if (parts[0] === "company") return await renderCompany();
     if (parts[0] === "new") return renderNewProject();
     if (parts[0] === "settings") return await renderSettings();

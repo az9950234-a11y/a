@@ -19,6 +19,13 @@ const APPS = [
       return qs.length ? `${pending.length} قيد المتابعة · ${num(Math.round(value))} ر.س` : "أنشئ أول عرض";
     },
   },
+  {
+    href: "#/calc", icon: "calc", title: "حاسبة الكميات", en: "CALCULATOR", tone: "slate",
+    stat: async () => {
+      const d = await api.getMeta("calcDraft");
+      return d?.lines?.length ? `حساب مفتوح · ${num(Math.round(calcTotals(d).total))} ر.س` : "ألواح، دواليب، زجاج… بالسعر مباشرة";
+    },
+  },
 ];
 
 async function renderHub() {
