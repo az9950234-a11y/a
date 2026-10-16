@@ -1,8 +1,8 @@
 // Offline support: app files are network-first (updates land immediately),
 // versioned CDN libraries and fonts are cache-first.
-const CACHE = "hectar-v4";
+const CACHE = "hectar-v5";
 const SHELL = [
-  "./", "index.html", "styles.css", "app.js", "manifest.json",
+  "./", "index.html", "styles.css", "app.js", "quotes.js", "main.js", "manifest.json",
   "assets/logo-white.png", "assets/mark-white.png", "assets/mark.png", "assets/icon-192.png",
   "https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js",
   "https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js",

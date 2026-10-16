@@ -28,7 +28,7 @@ const req = (r) => new Promise((res, rej) => { r.onsuccess = () => res(r.result)
 let dbPromise;
 function openDb() {
   return (dbPromise ||= new Promise((res, rej) => {
-    const r = indexedDB.open("hectar-measure", 2);
+    const r = indexedDB.open("hectar-measure", 3);
     r.onupgradeneeded = (e) => {
       const db = r.result;
       if (e.oldVersion < 1) {
@@ -36,7 +36,8 @@ function openDb() {
         db.createObjectStore("walls", { keyPath: "id" }).createIndex("project_id", "project_id");
         db.createObjectStore("files"); // id → Blob (photos, thumbnails, PDF reports)
       }
-      if (e.oldVersion < 2) db.createObjectStore("meta"); // settings, e.g. the materials catalog
+      if (e.oldVersion < 2) db.createObjectStore("meta"); // settings: materials catalog, company info, counters
+      if (e.oldVersion < 3) db.createObjectStore("quotes", { keyPath: "id" });
     };
     r.onsuccess = () => res(r.result);
     r.onerror = () => rej(r.error);
@@ -135,6 +136,35 @@ const api = {
   },
 
   saveCatalog: (list) => tx("meta", "readwrite", (s) => req(s.meta.put(list, "materials"))),
+
+  getMeta: (key) => tx("meta", "readonly", (s) => req(s.meta.get(key))),
+  setMeta: (key, value) => tx("meta", "readwrite", (s) => req(s.meta.put(value, key))),
+
+  listQuotes: () => tx("quotes", "readonly", (s) => req(s.quotes.getAll())),
+  getQuote: (id) => tx("quotes", "readonly", (s) => req(s.quotes.get(id))),
+  saveQuote: (q) => tx("quotes", "readwrite", (s) => req(s.quotes.put(q))),
+  deleteQuote: (id) => tx(["quotes", "files"], "readwrite", async (s) => {
+    const q = await req(s.quotes.get(id));
+    if (q?.pdf_id) s.files.delete(q.pdf_id);
+    s.quotes.delete(id);
+  }),
+  saveQuotePdf: (id, blob) => tx(["quotes", "files"], "readwrite", async (s) => {
+    const q = await req(s.quotes.get(id));
+    q.pdf_id = `qpdf:${id}`;
+    q.pdf_stale = false;
+    s.files.put(blob, q.pdf_id);
+    await req(s.quotes.put(q));
+    return q;
+  }),
+
+  // Q-2026-001, Q-2026-002… restarting every year
+  nextQuoteNumber: () => tx("meta", "readwrite", async (s) => {
+    const year = new Date().getFullYear();
+    const seq = (await req(s.meta.get("quoteSeq"))) || {};
+    const n = seq.year === year ? seq.n + 1 : 1;
+    await req(s.meta.put({ year, n }, "quoteSeq"));
+    return `Q-${year}-${String(n).padStart(3, "0")}`;
+  }),
 };
 
 // object URLs for stored photos, cached for the session
@@ -285,6 +315,10 @@ async function route() {
   window.scrollTo(0, 0);
   const parts = location.hash.replace(/^#\/?/, "").split("/").filter(Boolean);
   try {
+    if (!parts.length) return await renderHub();
+    if (parts[0] === "measure") return await renderProjects();
+    if (parts[0] === "q") return await routeQuotes(parts.slice(1));
+    if (parts[0] === "company") return await renderCompany();
     if (parts[0] === "new") return renderNewProject();
     if (parts[0] === "settings") return await renderSettings();
     if (parts[0] === "materials") return await renderMaterials();
@@ -326,8 +360,8 @@ async function renderProjects() {
   view.innerHTML = `
     <header class="hero" style="padding-bottom:44px">
       <div class="hero-bar">
-        <div class="hero-brand"><img src="${A.markWhite}" alt=""><div><div class="t">${COMPANY.ar}</div><div class="s">MEASUREMENTS</div></div></div>
-        <a class="icon-btn" href="#/settings" aria-label="الإعدادات والنسخ الاحتياطي">${ic("settings")}</a>
+        <a class="icon-btn" href="#/" aria-label="الرئيسية">${ic("back")}</a>
+        <div class="hero-brand"><div style="text-align:left"><div class="t">${COMPANY.ar}</div><div class="s">MEASUREMENTS</div></div><img src="${A.markWhite}" alt=""></div>
       </div>
       <div class="eyebrow">لوحة المشاريع</div>
       <h1>رفع المقاسات</h1>
@@ -366,7 +400,7 @@ async function renderProjects() {
 function renderNewProject() {
   view.innerHTML = `
     <header class="hero" style="padding-bottom:40px">
-      <div class="hero-bar"><a class="icon-btn" href="#/" aria-label="رجوع">${ic("back")}</a><img src="${A.markWhite}" alt="" style="width:30px"></div>
+      <div class="hero-bar"><a class="icon-btn" href="#/measure" aria-label="رجوع">${ic("back")}</a><img src="${A.markWhite}" alt="" style="width:30px"></div>
       <div class="eyebrow">مشروع جديد</div>
       <h1>بيانات المشروع</h1>
       <div class="sub">بعد الإنشاء تفتح الكاميرا مباشرة لتصوير أول جدار</div>
@@ -411,7 +445,7 @@ async function renderProject(id) {
 
   view.innerHTML = `
     <header class="hero">
-      <div class="hero-bar"><a class="icon-btn" href="#/" aria-label="المشاريع">${ic("back")}</a>${statusPill(p)}</div>
+      <div class="hero-bar"><a class="icon-btn" href="#/measure" aria-label="المشاريع">${ic("back")}</a>${statusPill(p)}</div>
       <div class="eyebrow num" style="text-align:right">${reportNo(p)}</div>
       <h1>${esc(p.name)}</h1>
       <div class="sub">
@@ -462,6 +496,10 @@ async function renderProject(id) {
         </div>`).join("") : `<div class="card empty"><div class="em-ico">${ic("camera")}</div><b>لا توجد جدران بعد</b>اضغط «إضافة جدار» وابدأ التصوير</div>`}
     </section>
 
+    ${walls.length ? `<section class="section"><button class="card quote-cta" id="toquote">
+      <span class="qi">${ic("file")}</span><span><b>إنشاء عرض سعر من هذا المشروع</b><small>الكميات والأسعار تنتقل تلقائياً</small></span>${ic("chev", "ico-sm")}
+    </button></section>` : ""}
+
     <div class="footer-actions">
       ${closed ? `<button class="btn btn-text" id="reopen">${ic("unlock", "ico-sm")} إعادة فتح المشروع</button>` : ""}
       <button class="btn btn-text btn-danger" id="del">${ic("trash", "ico-sm")} حذف المشروع</button>
@@ -483,6 +521,7 @@ async function renderProject(id) {
     try { await api.setStatus(p.id, "open"); route(); } catch (e) { fail(e); }
   });
   on("del", () => deleteProject(p));
+  on("toquote", () => quoteFromProject(p, walls, catalog));
 }
 
 async function deleteProject(p) {
@@ -490,7 +529,7 @@ async function deleteProject(p) {
   const b = busy("جاري الحذف…");
   try {
     await api.deleteProject(p.id);
-    go("#/");
+    go("#/measure");
   } catch (e) { fail(e); } finally { b.done(); }
 }
 
@@ -728,8 +767,6 @@ async function withBaselineFix(render) {
 // Each A4 page is built as HTML and rasterised separately: keeps Arabic shaping
 // correct and stays under mobile canvas size limits for large projects.
 async function buildPdf(p, walls, catalog, onProgress) {
-  const stage = document.getElementById("pdf-stage");
-  await Promise.all(["400", "500", "600", "700"].map((w) => document.fonts.load(`${w} 16px "Readex Pro"`, "عربي MH")));
 
   const photos = {};
   const withPhoto = walls.filter((w) => w.photo_id);
@@ -880,8 +917,15 @@ async function buildPdf(p, walls, catalog, onProgress) {
     addPage(body);
   });
 
+  return renderPages(pages, { title: `${p.name} — ${no}`, subject: "Site measurement report" }, onProgress);
+}
+
+// rasterise A4 page HTML snippets one by one into a PDF blob
+async function renderPages(pages, props, onProgress) {
+  const stage = document.getElementById("pdf-stage");
+  await Promise.all(["400", "500", "600", "700"].map((w) => document.fonts.load(`${w} 16px "Readex Pro"`, "عربي MH")));
   const pdf = new jspdf.jsPDF({ unit: "mm", format: "a4", orientation: "portrait", compress: true });
-  pdf.setProperties({ title: `${p.name} — ${no}`, author: COMPANY.en, subject: "Site measurement report" });
+  pdf.setProperties({ author: COMPANY.en, ...props });
   for (const [i, html] of pages.entries()) {
     onProgress(`إنشاء الصفحة ${i + 1} / ${pages.length}`);
     const el = document.createElement("div");
@@ -955,7 +999,8 @@ async function renderSettings() {
       </div>
       ${persisted ? "" : `<button class="btn btn-soft" id="persist">${ic("shield")} تفعيل الحماية</button>`}
 
-      <a class="btn" href="#/materials" style="justify-content:space-between">${ic("ruler")} المواد ومقاسات الألواح ${ic("chev", "ico-sm")}</a>
+      <a class="btn" href="#/materials" style="justify-content:space-between">${ic("ruler")} المواد والأسعار ومقاسات الألواح ${ic("chev", "ico-sm")}</a>
+      <a class="btn" href="#/company" style="justify-content:space-between">${ic("file")} بيانات الشركة وشروط العرض ${ic("chev", "ico-sm")}</a>
 
       <div class="field"><span>نسخة احتياطية</span>
         <button class="btn btn-primary" id="export">${ic("download")} تجهيز نسخة احتياطية</button>
@@ -994,7 +1039,7 @@ async function renderSettings() {
     const b = busy("جاري الاسترجاع…");
     try {
       const n = await importBackup(file);
-      toast(`تم استرجاع ${n} مشروع ✓`);
+      toast(`تم استرجاع ${n} مشروع وعرض ✓`);
       go("#/");
     } catch (err) { fail(err); } finally { b.done(); }
   };
@@ -1013,6 +1058,7 @@ async function renderMaterials() {
         <label><span>عرض اللوح</span><div class="in"><input name="w" type="number" inputmode="decimal" step="any" min="0" value="${c.sheet_w ?? ""}" placeholder="—"><i>cm</i></div></label>
         <label><span>طول اللوح</span><div class="in"><input name="h" type="number" inputmode="decimal" step="any" min="0" value="${c.sheet_h ?? ""}" placeholder="—"><i>cm</i></div></label>
         <label><span>هدر (للمتر)</span><div class="in"><input name="waste" type="number" inputmode="decimal" step="any" min="0" value="${c.waste ?? 0}"><i>%</i></div></label>
+        <label><span>السعر (لوح أو م²)</span><div class="in"><input name="price" type="number" inputmode="decimal" step="any" min="0" value="${c.price ?? ""}" placeholder="—"><i>ر.س</i></div></label>
       </div>
     </div>`;
 
@@ -1020,7 +1066,7 @@ async function renderMaterials() {
     <header class="hero" style="padding-bottom:40px">
       <div class="hero-bar"><a class="icon-btn" href="#/settings" aria-label="رجوع">${ic("back")}</a><img src="${A.markWhite}" alt="" style="width:30px"></div>
       <div class="eyebrow">المواد</div>
-      <h1>مقاسات الألواح والهدر</h1>
+      <h1>المواد والأسعار</h1>
       <div class="sub">الألواح تنحسب بعرض الجدار ÷ عرض اللوح، مقرّبة للأعلى (360 ÷ 120 = 3 ألواح). اترك العرض فاضي للمواد اللي تنحسب بالمتر (مثل الدهان).</div>
     </header>
     <form class="sheet form" id="f">
@@ -1039,7 +1085,7 @@ async function renderMaterials() {
     e.preventDefault();
     const items = [...list.querySelectorAll(".matrow")].map((r) => {
       const v = (n) => r.querySelector(`[name=${n}]`).value.trim();
-      return { name: v("name"), sheet_w: parseFloat(v("w")) || null, sheet_h: parseFloat(v("h")) || null, waste: parseFloat(v("waste")) || 0 };
+      return { name: v("name"), sheet_w: parseFloat(v("w")) || null, sheet_h: parseFloat(v("h")) || null, waste: parseFloat(v("waste")) || 0, price: parseFloat(v("price")) || null };
     }).filter((c) => c.name);
     try {
       await api.saveCatalog(items);
@@ -1057,14 +1103,17 @@ const blobToDataUrl = (blob) => new Promise((res, rej) => {
 });
 
 async function exportBackup() {
-  const { projects, walls, keys, blobs } = await tx(["projects", "walls", "files"], "readonly", async (s) => {
-    const [projects, walls, keys] = await Promise.all([req(s.projects.getAll()), req(s.walls.getAll()), req(s.files.getAllKeys())]);
+  const { projects, walls, quotes, keys, blobs, metaKeys, metaVals } = await tx(["projects", "walls", "quotes", "files", "meta"], "readonly", async (s) => {
+    const [projects, walls, quotes, keys, metaKeys, metaVals] = await Promise.all([
+      req(s.projects.getAll()), req(s.walls.getAll()), req(s.quotes.getAll()), req(s.files.getAllKeys()), req(s.meta.getAllKeys()), req(s.meta.getAll()),
+    ]);
     const blobs = await Promise.all(keys.map((k) => req(s.files.get(k))));
-    return { projects, walls, keys, blobs };
+    return { projects, walls, quotes, keys, blobs, metaKeys, metaVals };
   });
   const files = {};
   for (const [i, k] of keys.entries()) files[k] = await blobToDataUrl(blobs[i]);
-  const data = { app: "hectar-measure", version: 2, exported_at: nowIso(), projects, walls, files, materials: await api.getCatalog() };
+  const meta = Object.fromEntries(metaKeys.map((k, i) => [k, metaVals[i]]));
+  const data = { app: "hectar-measure", version: 3, exported_at: nowIso(), projects, walls, quotes, files, meta, materials: await api.getCatalog() };
   return new Blob([JSON.stringify(data)], { type: "application/json" });
 }
 
@@ -1072,20 +1121,19 @@ async function importBackup(file) {
   const data = JSON.parse(await file.text());
   if (data.app !== "hectar-measure") throw new Error("هذا الملف ليس نسخة احتياطية من التطبيق");
   const files = await Promise.all(Object.entries(data.files || {}).map(async ([k, url]) => [k, await (await fetch(url)).blob()]));
-  await tx(["projects", "walls", "files"], "readwrite", async (s) => {
+  await tx(["projects", "walls", "quotes", "files", "meta"], "readwrite", async (s) => {
     data.projects.forEach((p) => s.projects.put(p));
     data.walls.forEach((w) => s.walls.put(w));
+    (data.quotes || []).forEach((q) => s.quotes.put(q));
     files.forEach(([k, blob]) => s.files.put(blob, k));
+    // company info, terms, counters — keep anything already set on this device
+    for (const [k, v] of Object.entries(data.meta || {})) if (k !== "materials" && v != null) s.meta.put(v, k);
   });
   if (data.materials) {
     const current = await api.getCatalog();
     const merged = [...current.filter((c) => !data.materials.some((m) => m.name === c.name)), ...data.materials];
     await api.saveCatalog(merged);
   }
-  return data.projects.length;
+  return data.projects.length + (data.quotes || []).length;
 }
 
-/* ---------- boot ---------- */
-window.addEventListener("hashchange", route);
-route();
-if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js").catch(() => {});
