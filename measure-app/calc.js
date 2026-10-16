@@ -12,9 +12,10 @@ const CALC_KINDS = {
 const DEFAULT_PRESETS = [
   { name: "دولاب خشب", unit: "م²", price: 250 },
   { name: "دولاب خشب + زجاج", unit: "م²", price: 350 },
-  { name: "بديل رخام", unit: "لوح", price: 240 },
-  { name: "بديل شيبورد", unit: "لوح", price: 150 },
-  { name: "بديل خشب", unit: "لوح", price: 180 },
+  { name: "بديل رخام — مطابخ", unit: "لوح", price: 180 },
+  { name: "بديل رخام — حمامات", unit: "لوح", price: 200 },
+  { name: "بديل شيبورد", unit: "لوح", price: 190 },
+  { name: "بديل خشب مع التركيب", unit: "لوح", price: 45 },
   { name: "بروفايل / زوايا", unit: "م.ط", price: 15 },
 ];
 
@@ -211,10 +212,15 @@ async function renderCalcPrices() {
     <form class="sheet form" id="f">
       <div id="list" class="wlist">${presets.map(row).join("")}</div>
       <button type="button" class="btn btn-soft" id="add">${ic("plus")} إضافة بند</button>
+      <button type="button" class="btn btn-text" id="reset">${ic("refresh", "ico-sm")} استعادة الأسعار الافتراضية</button>
       <div class="actionbar"><div class="inner"><button class="btn btn-primary">${ic("check")} حفظ</button></div></div>
     </form>`;
 
   const list = document.getElementById("list");
+  document.getElementById("reset").onclick = () => {
+    if (!confirm("استبدال القائمة بالأسعار الافتراضية؟ (لا تُحفظ إلا بعد الضغط على حفظ)")) return;
+    list.innerHTML = DEFAULT_PRESETS.map(row).join("");
+  };
   list.onclick = (e) => { if (e.target.closest(".del")) e.target.closest(".matrow").remove(); };
   document.getElementById("add").onclick = () => {
     list.insertAdjacentHTML("beforeend", row({ name: "", unit: "م²", price: "" }));

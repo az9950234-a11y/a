@@ -2,9 +2,9 @@
 
 // sheet sizes in cm; materials without a size are counted in m² only
 const DEFAULT_CATALOG = [
-  { name: "بديل خشب", sheet_w: 120, sheet_h: 280, waste: 0 },
-  { name: "بديل رخام", sheet_w: 120, sheet_h: 280, waste: 0 },
-  { name: "بديل شيبورد", sheet_w: 120, sheet_h: 280, waste: 0 },
+  { name: "بديل خشب", sheet_w: 120, sheet_h: 280, waste: 0, price: 45 },
+  { name: "بديل رخام", sheet_w: 120, sheet_h: 280, waste: 0, price: 180 },
+  { name: "بديل شيبورد", sheet_w: 120, sheet_h: 280, waste: 0, price: 190 },
   { name: "جبس بورد", sheet_w: 120, sheet_h: 240, waste: 0 },
   { name: "دهان", sheet_w: null, sheet_h: null, waste: 0 },
   { name: "ورق جدران", sheet_w: null, sheet_h: null, waste: 10 },
