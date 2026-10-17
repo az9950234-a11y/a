@@ -26,6 +26,15 @@ const APPS = [
       return d?.lines?.length ? `حساب مفتوح · ${num(Math.round(calcTotals(d).total))} ر.س` : "ألواح، دواليب، زجاج… بالسعر مباشرة";
     },
   },
+  {
+    href: "#/stats", icon: "chart", title: "الإحصائيات", en: "DASHBOARD", tone: "ink",
+    stat: async () => {
+      const qs = await api.listQuotes();
+      const now = new Date();
+      const month = qs.filter((q) => q.status === "accepted" && new Date(q.created_at).getMonth() === now.getMonth() && new Date(q.created_at).getFullYear() === now.getFullYear());
+      return `مبيعات الشهر · ${num(Math.round(month.reduce((t, q) => t + quoteTotals(q).total, 0)))} ر.س`;
+    },
+  },
 ];
 
 async function renderHub() {
