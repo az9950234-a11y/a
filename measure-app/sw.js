@@ -1,8 +1,8 @@
 // Offline support: app files are network-first (updates land immediately),
 // versioned CDN libraries and fonts are cache-first.
-const CACHE = "hectar-v8";
+const CACHE = "hectar-v9";
 const SHELL = [
-  "./", "index.html", "styles.css", "app.js", "quotes.js", "calc.js", "stats.js", "main.js", "manifest.json",
+  "./", "index.html", "styles.css", "app.js", "quotes.js", "calc.js", "stats.js", "web.js", "main.js", "manifest.json",
   "assets/logo-white.png", "assets/mark-white.png", "assets/mark.png", "assets/icon-192.png",
   "https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js",
   "https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js",
@@ -22,6 +22,8 @@ self.addEventListener("activate", (e) => {
 self.addEventListener("fetch", (e) => {
   const { request } = e;
   if (request.method !== "GET" || request.url.startsWith("blob:")) return;
+  // live data (website statistics) always goes to the network, never the cache
+  if (request.headers.has("authorization") || new URL(request.url).pathname.startsWith("/api/")) return;
   const sameOrigin = new URL(request.url).origin === location.origin;
 
   e.respondWith((async () => {

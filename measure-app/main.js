@@ -35,6 +35,17 @@ const APPS = [
       return `مبيعات الشهر · ${num(Math.round(month.reduce((t, q) => t + quoteTotals(q).total, 0)))} ر.س`;
     },
   },
+  {
+    href: "#/web", icon: "globe", title: "زوار الموقع", en: "HECTAR.SA", tone: "web",
+    stat: async () => {
+      const cfg = await api.getMeta("webStats");
+      if (!cfg?.token) return "اربط إحصائيات الموقع";
+      const d = ((await api.getMeta("webStatsCache")) || {})[28];
+      if (!d) return "زوار وطلبات تواصل hectar.sa";
+      const contacts = Object.values(d.contacts).reduce((s, c) => s + c.cur, 0);
+      return `${num(d.totals.cur.users)} زائر · ${num(contacts)} طلب تواصل (28 يوم)`;
+    },
+  },
 ];
 
 async function renderHub() {

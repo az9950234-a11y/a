@@ -564,3 +564,14 @@ textarea.input { min-height: 88px; resize: vertical; }
 .stats-foot { text-align: center; color: var(--muted); font-size: 13px; margin: 22px 16px 0; }
 .stats-foot b { color: var(--ink); }
 .m2-list { display: flex; flex-wrap: wrap; gap: 6px 14px; margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--line); font-size: 12.5px; color: var(--ink-2); }
+
+/* ---------- website visitors ---------- */
+.tone-web .app-ico { background: linear-gradient(140deg, #3a78b8, #2e64a0); }
+.web-status { text-align: center; color: var(--muted); font-size: 12px; margin: 10px 16px 0; }
+.stat small .d { font-weight: 600; }
+.stat small .d.up { color: var(--ok); }
+.stat small .d.down { color: var(--danger); }
+.muted-note { color: var(--muted); font-size: 13px; text-align: center; padding: 6px 0; }
+.two-col { display: grid; gap: 12px; }
+@media (min-width: 560px) { .two-col { grid-template-columns: 1fr 1fr; } }
+.chart .hitarea { cursor: crosshair; touch-action: pan-y; }
