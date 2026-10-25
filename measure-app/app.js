@@ -322,6 +322,7 @@ async function route() {
     if (parts[0] === "measure") return await renderProjects();
     if (parts[0] === "q") return await routeQuotes(parts.slice(1));
     if (parts[0] === "stats") return await renderStats();
+    if (parts[0] === "transfer") return await routeTransfer(parts.slice(1));
     if (parts[0] === "web") return await (parts[1] === "setup" ? renderWebSetup() : renderWeb());
     if (parts[0] === "calc") return await (parts[1] === "prices" ? renderCalcPrices() : renderCalc());
     if (parts[0] === "company") return await renderCompany();

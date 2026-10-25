@@ -36,6 +36,10 @@ const APPS = [
     },
   },
   {
+    href: "#/transfer", icon: "upload", title: "نقل الصور", en: "PHOTO TRANSFER", tone: "xfer",
+    stat: async () => "من الجوال للكمبيوتر بالجودة الأصلية",
+  },
+  {
     href: "#/web", icon: "globe", title: "زوار الموقع", en: "HECTAR.SA", tone: "web",
     stat: async () => {
       const cfg = await api.getMeta("webStats");
