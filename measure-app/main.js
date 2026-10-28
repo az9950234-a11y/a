@@ -27,6 +27,14 @@ const APPS = [
     },
   },
   {
+    href: "#/pricing", icon: "tag", title: "تسعير المشروع", en: "PRICING", tone: "green",
+    stat: async () => {
+      const p = await api.getMeta("pricingDraft");
+      if (!p?.cost) return "التكلفة + الربح + الاحتياطي = سعر البيع";
+      return `آخر حساب · ${num(Math.round(pricingTotals(p).total))} ر.س`;
+    },
+  },
+  {
     href: "#/stats", icon: "chart", title: "الإحصائيات", en: "DASHBOARD", tone: "ink",
     stat: async () => {
       const qs = await api.listQuotes();
