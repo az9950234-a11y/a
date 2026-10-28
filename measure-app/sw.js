@@ -1,6 +1,6 @@
 // Offline support: app files are network-first (updates land immediately),
 // versioned CDN libraries and fonts are cache-first.
-const CACHE = "hectar-v11";
+const CACHE = "hectar-v12";
 const SHELL = [
   "./", "index.html", "styles.css", "app.js", "quotes.js", "calc.js", "pricing.js", "stats.js", "web.js", "transfer.js", "main.js", "manifest.json",
   "assets/logo-white.png", "assets/mark-white.png", "assets/mark.png", "assets/icon-192.png",

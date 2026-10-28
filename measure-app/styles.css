@@ -639,3 +639,28 @@ textarea.input { min-height: 88px; resize: vertical; }
 .insight > div:empty { display: none; }
 .insight .ico { color: var(--copper); margin-top: 3px; }
 .insight b { color: var(--ink); }
+
+/* ---------- home: icon grid ---------- */
+.hub-hero { padding-bottom: 64px; padding-top: calc(28px + env(safe-area-inset-top)); }
+.hub-logo { width: min(170px, 46vw); margin: 0 auto 14px; }
+.app-grid { margin: -40px 16px 0; position: relative; z-index: 2; padding: 20px 10px 14px; display: grid; grid-template-columns: repeat(3, 1fr); gap: 18px 6px; }
+@media (min-width: 560px) { .app-grid { grid-template-columns: repeat(4, 1fr); } }
+.app-icon { display: grid; justify-items: center; gap: 8px; text-decoration: none; color: var(--ink); -webkit-tap-highlight-color: transparent; }
+.app-icon .app-ico { position: relative; width: 64px; height: 64px; border-radius: 20px; box-shadow: 0 6px 14px rgba(15, 38, 60, .16); transition: transform .12s; }
+.app-icon:active .app-ico { transform: scale(.92); }
+.app-icon .app-ico .ico { width: 30px; height: 30px; }
+.app-name { font-size: 13px; font-weight: 600; text-align: center; line-height: 1.35; }
+.tone-gray .app-ico { background: linear-gradient(140deg, #9aa5b3, #6b7686); }
+.badge-dot { position: absolute; top: -6px; left: -6px; min-width: 22px; height: 22px; padding: 0 6px; border-radius: 11px; background: var(--danger); color: #fff; font-size: 12px; font-weight: 700; display: grid; place-items: center; border: 2px solid var(--surface); line-height: 1; }
+.glance { padding: 4px 14px; }
+.glance a { display: flex; align-items: center; gap: 10px; padding: 12px 0; border-bottom: 1px solid var(--line); text-decoration: none; color: var(--ink-2); font-size: 14px; }
+.glance a:last-child { border-bottom: 0; }
+.glance a > span:nth-child(2) { flex: 1; }
+.glance a > .ico:last-child { color: var(--muted); }
+.glance .g-ico { width: 30px; height: 30px; border-radius: 10px; display: grid; place-items: center; color: #fff; flex: none; }
+.glance .tone-navy .g-ico { background: var(--navy); }
+.glance .tone-copper .g-ico { background: var(--copper); }
+.glance .tone-slate .g-ico { background: #2e5a85; }
+.glance .tone-green .g-ico { background: #128a60; }
+.glance .tone-ink .g-ico { background: #1f242b; }
+.glance .tone-web .g-ico { background: #2e64a0; }
